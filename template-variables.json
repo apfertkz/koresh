@@ -1,0 +1,146 @@
+{
+  "_comment": "Не формат Railway, а шпаргалка: какие поля завести в шаблоне Railway (Templates -> New Template -> сервис из образа). Секреты и значения клиента сюда не пишем.",
+  "service": {
+    "image": "ghcr.io/apfertkz/koresh:stable",
+    "healthcheckPath": "/health",
+    "region": "EU West (europe-west4-drams3a, Amsterdam)",
+    "replicas": 1,
+    "publicNetworking": true,
+    "autoUpdates": "включить в Settings -> Source -> Configure Auto Updates, окно обслуживания считается в UTC",
+    "volume": "ОБЯЗАТЕЛЬНО для долгой памяти: в композере шаблона правый клик по сервису -> Attach Volume, mount path /data (Hobby: 5 ГБ, хватает с запасом). Сервису с Volume нельзя ставить несколько реплик; Volume монтируется от root, поэтому нужна переменная RAILWAY_RUN_UID=0"
+  },
+  "variables": [
+    {
+      "name": "ANTHROPIC_API_KEY",
+      "required": true,
+      "default": "",
+      "description": "Ключ API из консоли Anthropic (Settings -> API keys). Начинается с sk-ant-"
+    },
+    {
+      "name": "WEBHOOK_SECRET",
+      "required": true,
+      "default": "${{secret(48, \"abcdef0123456789\")}}",
+      "description": "Генерируется само. Входит в адрес вебхука: https://<домен>/alice/<WEBHOOK_SECRET>"
+    },
+    {
+      "name": "SETUP_CODE",
+      "required": true,
+      "default": "${{secret(12, \"abcdefghjkmnpqrstuvwxyz23456789\")}}",
+      "description": "Генерируется само. Одноразовый код для входа на страницу настройки https://<домен>/setup. После установки удалить переменную: страница закроется навсегда (вернуться можно, только добавив её снова)"
+    },
+    {
+      "name": "YANDEX_OAUTH_CLIENT_ID",
+      "required": false,
+      "default": "",
+      "description": "ClientID общего приложения «Кореш» в Яндексе: подставляет установщик (значение у владельца). По нему кнопка «Войти через Яндекс» на /setup выдаёт токен умного дома. Секрет приложения не нужен и нигде не хранится. Пусто: страница предложит создать своё приложение"
+    },
+    {
+      "name": "INSTALL_CALLBACK_URL",
+      "required": false,
+      "default": "",
+      "description": "Адрес, куда сервер один раз сообщит «установлено» после шага «Готово». Подставляет установщик. Уходят только токен установки, статус и версия; ключей и разговоров клиента там нет"
+    },
+    {
+      "name": "INSTALL_TOKEN",
+      "required": false,
+      "default": "",
+      "description": "Токен этой установки вида <публичная часть>.<секрет> (подставляет установщик). Целиком служит ключом HMAC-подписи сообщения «установлено»; наружу уходит только часть до точки"
+    },
+    {
+      "name": "PUBLIC_URL",
+      "required": false,
+      "default": "",
+      "description": "Публичный адрес сервиса, если на /setup показывается неверный адрес вебхука (например, свой домен). Обычно пусто: адрес берётся из домена Railway"
+    },
+    {
+      "name": "MODEL",
+      "required": false,
+      "default": "claude-sonnet-5-5",
+      "description": "Модель мозга. Быстрее и дешевле: claude-haiku-5-5"
+    },
+    {
+      "name": "EFFORT",
+      "required": false,
+      "default": "low",
+      "description": "Глубина размышления: low (быстро, для голоса) | medium | high | xhigh | max. Мусор = low"
+    },
+    {
+      "name": "ASSISTANT_NAME",
+      "required": false,
+      "default": "Кореш",
+      "description": "Как зовут ассистента. Можно не заполнять: то же задаётся на странице /setup; переменная главнее страницы"
+    },
+    {
+      "name": "TONE",
+      "required": false,
+      "default": "derzkiy",
+      "description": "derzkiy_mat (с матом) | derzkiy (дерзкий без мата) | vezhlivyy (вежливый). Можно не заполнять: то же задаётся на странице /setup; переменная главнее страницы"
+    },
+    {
+      "name": "GENDER",
+      "required": false,
+      "default": "male",
+      "description": "Род ассистента о себе, должен совпадать с голосом навыка в консоли Диалогов: male (мужской голос, по умолчанию) | female (голос Алисы). Мусор = male. Можно не заполнять: то же задаётся на странице /setup; переменная главнее страницы"
+    },
+    {
+      "name": "HOUSEHOLD",
+      "required": false,
+      "default": "",
+      "description": "JSON: {\"owner\":\"имя\",\"people\":{\"Имя\":\"кто это\"},\"rooms\":{\"детская\":\"название в Яндексе\"},\"notes\":\"...\"}. Можно не заполнять: то же задаётся на странице /setup; переменная главнее страницы"
+    },
+    {
+      "name": "YANDEX_IOT_TOKEN",
+      "required": false,
+      "default": "",
+      "description": "OAuth-токен умного дома (iot:view, iot:control). Необязателен: проще вставить его на странице /setup (шаг «Умный дом»), тогда он лежит в config.json на Volume. Если задан и тут, эта переменная главнее. Без токена ассистент только болтает"
+    },
+    {
+      "name": "MEMORY_DIR",
+      "required": false,
+      "default": "/data",
+      "description": "Где лежит долгая память (заметки о человеке, пересказы разговоров, суточный счётчик). Должен совпадать с mount path Volume. Не менять"
+    },
+    {
+      "name": "RAILWAY_RUN_UID",
+      "required": true,
+      "default": "0",
+      "description": "Служебная переменная Railway: Volume монтируется от root, без неё приложение не сможет писать в /data и память будет жить только до перезапуска"
+    },
+    {
+      "name": "MEMORY_MODEL",
+      "required": false,
+      "default": "claude-haiku-5-5",
+      "description": "Дешёвая модель для пересказа разговоров (вне ответа, после него). Не менять"
+    },
+    {
+      "name": "DAILY_TOKEN_CAP",
+      "required": false,
+      "default": "300000",
+      "description": "Потолок токенов в сутки (UTC). 0 = без потолка"
+    },
+    {
+      "name": "ALLOW_LOCKS",
+      "required": false,
+      "default": "",
+      "description": "1 = разрешить замки/ворота/сигнализацию (только вместе с LOCK_PHRASE). Можно не заполнять: то же задаётся на странице /setup; переменная главнее страницы"
+    },
+    {
+      "name": "LOCK_PHRASE",
+      "required": false,
+      "default": "",
+      "description": "Кодовая фраза для замков. Хозяин произносит её в разговоре. Можно не заполнять: то же задаётся на странице /setup; переменная главнее страницы"
+    },
+    {
+      "name": "BLOCKED_NAMES",
+      "required": false,
+      "default": "",
+      "description": "Доп. слова через запятую: устройства и сценарии с ними в названии тоже защищены. Можно не заполнять: то же задаётся на странице /setup; переменная главнее страницы"
+    },
+    {
+      "name": "HOLD_TIMEOUT",
+      "required": false,
+      "default": "3.8",
+      "description": "Секунд ждать мозг до фразы «секунду, думаю». Яндекс ждёт ответ максимум 4,5 с вместе с сетью — не больше 4"
+    }
+  ]
+}

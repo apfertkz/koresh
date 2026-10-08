@@ -1,0 +1,523 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Кореш: настройка</title>
+<style>
+:root{--paper:#f4f0e8;--ink:#20201e;--orange:#ff4d2b;--yellow:#f4cb70;--white:#fffdf8;--green:#2f7d4f;--red:#c0321a;--line:3px solid var(--ink)}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+header{display:flex;align-items:center;gap:14px;padding:14px 20px;border-bottom:var(--line);background:var(--yellow)}
+header .logo{font-weight:900;font-size:22px;letter-spacing:.04em;text-transform:uppercase}
+header .logo i{font-style:normal;background:var(--ink);color:var(--yellow);padding:0 8px;margin-right:6px}
+header .sub{font-size:14px;opacity:.75}
+header .sp{flex:1}
+main{max-width:860px;margin:0 auto;padding:22px 16px 80px}
+h1{font-size:30px;line-height:1.15;margin:6px 0 10px;font-weight:900}
+h2{font-size:24px;line-height:1.2;margin:0 0 10px;font-weight:900}
+h3{font-size:17px;margin:22px 0 8px;font-weight:800}
+p{margin:8px 0}
+.small{font-size:14px;opacity:.8}
+.card{background:var(--white);border:var(--line);box-shadow:6px 6px 0 var(--ink);padding:20px;margin:16px 0}
+.stepper{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 6px;padding:0;list-style:none}
+.stepper button{font:inherit;font-weight:700;font-size:14px;background:var(--white);color:var(--ink);border:var(--line);padding:6px 10px;min-height:44px;cursor:pointer;display:flex;gap:6px;align-items:center}
+.stepper button b{display:inline-block;min-width:22px;height:22px;line-height:19px;text-align:center;border:2px solid var(--ink);border-radius:50%;font-size:12px}
+.stepper button.cur{background:var(--ink);color:var(--yellow)}
+.stepper button.cur b{border-color:var(--yellow)}
+.stepper button.done b{background:var(--green);border-color:var(--green);color:#fff}
+.btn{font:inherit;font-weight:800;background:var(--orange);color:var(--ink);border:var(--line);box-shadow:4px 4px 0 var(--ink);padding:10px 18px;min-height:44px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;text-align:center;margin:6px 8px 6px 0}
+.btn:active{transform:translate(3px,3px);box-shadow:1px 1px 0 var(--ink)}
+.btn.alt{background:var(--white)}
+.btn.yel{background:var(--yellow)}
+.btn[disabled]{opacity:.5;cursor:wait}
+.nav{display:flex;justify-content:space-between;gap:10px;margin-top:22px;flex-wrap:wrap}
+label{display:block;font-weight:700;margin:14px 0 4px}
+input[type=text],input[type=password],input[type=search],textarea,select{width:100%;font:inherit;background:#fff;color:var(--ink);border:var(--line);padding:9px 11px;border-radius:0}
+input:focus,textarea:focus,select:focus,button:focus-visible,a:focus-visible{outline:3px solid var(--orange);outline-offset:2px}
+input[type=radio],input[type=checkbox]{width:20px;height:20px;accent-color:var(--orange);margin:0}
+.opt{display:flex;gap:12px;align-items:flex-start;border:var(--line);background:#fff;padding:10px 12px;margin:8px 0;cursor:pointer}
+.opt.sel{background:var(--yellow)}
+.opt b{display:block}
+.note{border:var(--line);padding:10px 14px;margin:12px 0;font-weight:600}
+.note.ok{background:#dcefe2;border-color:var(--green)}
+.note.bad{background:#f9d9d2;border-color:var(--red)}
+.note.warn{background:var(--yellow)}
+.note.info{background:#fff}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow-wrap:anywhere}
+.url{font-size:19px;font-weight:700;word-break:break-all;background:var(--ink);color:var(--yellow);padding:16px;margin:10px 0;user-select:all}
+.list{margin:10px 0;padding:0;list-style:none}
+.list li{display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-bottom:2px solid var(--ink);padding:7px 0}
+.list li:last-child{border-bottom:0}
+.tag{font-size:12px;font-weight:800;border:2px solid var(--ink);padding:0 7px;background:var(--white);white-space:nowrap}
+.tag.lock{background:var(--orange)}
+.tag.src{background:var(--yellow)}
+.row{display:grid;grid-template-columns:1fr 1.4fr 44px;gap:8px;margin:6px 0}
+.row .x{font:inherit;font-weight:900;background:var(--white);border:var(--line);cursor:pointer;min-width:44px;min-height:44px}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}
+.chip{border:var(--line);background:var(--white);padding:3px 12px;min-height:44px;display:inline-flex;align-items:center;font-weight:700;cursor:pointer;font-size:14px}
+.chip.on{background:var(--orange)}
+.steps{counter-reset:s;margin:12px 0;padding:0;list-style:none}
+.steps li{counter-increment:s;position:relative;border:var(--line);background:#fff;padding:12px 14px 12px 62px;margin:10px 0;min-height:60px}
+.steps li::before{content:counter(s);position:absolute;left:12px;top:10px;width:36px;height:36px;line-height:32px;text-align:center;font-weight:900;font-size:20px;background:var(--orange);border:var(--line);border-radius:50%}
+.mock{display:inline-block;margin-top:6px;border:2px dashed var(--ink);background:var(--paper);padding:4px 10px;font-size:14px;font-weight:700}
+.mock.btnm{background:var(--yellow);border-style:solid}
+.chk{font-size:12px;font-weight:800;background:var(--yellow);border:2px solid var(--ink);padding:0 6px;margin-left:4px}
+.pulse{display:inline-block;width:12px;height:12px;border-radius:50%;background:var(--orange);margin-right:8px;animation:p 1s infinite}
+@keyframes p{0%{opacity:1}50%{opacity:.2}100%{opacity:1}}
+.big{font-size:22px}
+.hidden{display:none}
+@media (max-width:620px){.row{grid-template-columns:1fr 44px}.row input:nth-child(2){grid-column:1/2}}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo"><i>К</i>Кореш</div>
+  <div class="sub">настройка на сервере клиента</div>
+  <div class="sp"></div>
+  <button class="btn alt hidden" id="logout" style="margin:0;padding:6px 12px;box-shadow:none">Выйти</button>
+</header>
+<main id="app"><p>Загрузка…</p></main>
+
+<script>
+"use strict";
+const app = document.getElementById('app');
+// replaceChildren сам превращает null в текст «null»: пропускаем пустые значения (условные заметки, кнопки)
+{ const rc = Element.prototype.replaceChildren; Element.prototype.replaceChildren = function (...k) { return rc.apply(this, k.filter(c => c != null && c !== false)); }; }
+let S = null;            // состояние сервера
+let step = 0;
+let ui = {brain: false, iot: false, char: false, home: false, heard: false};
+let devs = null;         // список устройств {count, devices, scenarios, rooms...}
+let pollTimer = null;
+
+function h(tag, a, ...kids) {
+  const e = document.createElement(tag);
+  if (a) for (const [k, v] of Object.entries(a)) {
+    if (k === 'class') e.className = v;
+    else if (k === 'on') for (const [ev, fn] of Object.entries(v)) e.addEventListener(ev, fn);
+    else if (k === 'value') e.value = v;
+    else if (k === 'checked') e.checked = !!v;
+    else if (v === true) e.setAttribute(k, '');
+    else if (v !== false && v != null) e.setAttribute(k, v);
+  }
+  for (const c of kids.flat(Infinity)) {
+    if (c == null || c === false) continue;
+    e.append(c.nodeType ? c : document.createTextNode(String(c)));
+  }
+  return e;
+}
+function note(kind, ...kids) { return h('div', {class: 'note ' + kind}, ...kids); }
+function plural(n, one, few, many) {
+  const m = n % 100, d = n % 10;
+  if (m > 10 && m < 20) return many;
+  return d === 1 ? one : (d > 1 && d < 5 ? few : many);
+}
+function chk() { return h('span', {class: 'chk'}, 'ПРОВЕРИТЬ'); }
+
+async function api(path, body) {
+  const opt = {credentials: 'same-origin'};
+  if (body !== undefined) { opt.method = 'POST'; opt.headers = {'Content-Type': 'application/json'}; opt.body = JSON.stringify(body); }
+  let r, j = {};
+  try { r = await fetch('/setup/api/' + path, opt); } catch (e) { return {ok: false, status: 0, message: 'Нет связи с сервером. Проверь интернет и попробуй ещё раз.'}; }
+  try { j = await r.json(); } catch (e) { /* не JSON */ }
+  if (r.status === 401 && path !== 'login') { stopPoll(); renderLogin('Сессия кончилась, введи код ещё раз.'); }
+  return Object.assign({status: r.status, ok: r.ok}, j);
+}
+
+function btn(label, fn, cls) {
+  const b = h('button', {type: 'button', class: 'btn ' + (cls || '')}, label);
+  b.addEventListener('click', async () => {
+    if (b.disabled) return;
+    b.disabled = true;
+    try { await fn(b); } finally { b.disabled = false; }
+  });
+  return b;
+}
+function srcTag(src) {
+  return src === 'env' ? h('span', {class: 'tag src', title: 'Задано в переменных Railway: страница это не перекроет'}, 'из переменных Railway') : null;
+}
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch (e) { /* запасной путь ниже */ }
+  const t = h('textarea', {readonly: true, 'aria-hidden': 'true', style: 'position:fixed;left:0;top:0;width:1px;height:1px;opacity:0'});
+  t.value = text; document.body.append(t); t.focus(); t.select();
+  try { t.setSelectionRange(0, text.length); } catch (e) { /* iOS */ }
+  let ok = false; try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+  t.remove(); return ok;
+}
+function selectNode(el) {
+  try { const r = document.createRange(); r.selectNodeContents(el); const s = window.getSelection(); s.removeAllRanges(); s.addRange(r); } catch (e) { /* не страшно */ }
+}
+
+/* ---------- вход / закрыто ---------- */
+function setLogout(show) { document.getElementById('logout').classList.toggle('hidden', !show); }
+document.getElementById('logout').addEventListener('click', async () => { stopPoll(); await api('logout', {}); renderLogin(); });
+
+function renderLogin(msg, closed) {
+  setLogout(false);
+  const input = h('input', {type: 'password', autocomplete: 'off', placeholder: 'Код установки', 'aria-label': 'Код установки'});
+  const out = h('div');
+  const go = async (reopen) => {
+    out.replaceChildren();
+    const code = input.value.trim();
+    if (!code) { out.append(note('bad', 'Введи код.')); return; }
+    const r = await api('login', {code, reopen: !!reopen});
+    input.value = '';
+    if (r.ok) { start(); return; }
+    if (r.error === 'closed') { renderLogin(r.message, true); return; }
+    out.append(note('bad', r.message || 'Не получилось войти.'));
+  };
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') go(closed); });
+  app.replaceChildren(h('div', {class: 'card'},
+    h('h1', 0, closed ? 'Настройка завершена' : 'Вход в настройку'),
+    msg ? note(closed ? 'info' : 'warn', msg) : null,
+    h('p', 0, closed
+      ? 'Страница закрыта. Чтобы поменять настройки, введи код установки и нажми «Перенастроить».'
+      : 'Введи код установки (переменная SETUP_CODE в Railway).'),
+    input, out,
+    closed ? btn('Перенастроить', () => go(true)) : btn('Войти', () => go(false))));
+}
+
+/* ---------- каркас мастера ---------- */
+const STEPS = ['Мозг', 'Умный дом', 'Характер', 'Дом', 'Алиса', 'Проверка', 'Готово'];
+function stopPoll() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+
+async function start() {
+  const r = await api('state');
+  if (!r.ok) { renderLogin(); return; }
+  S = r;
+  devs = null;
+  setLogout(true);
+  go(0);
+}
+function go(n) {
+  stopPoll();
+  step = Math.max(0, Math.min(STEPS.length - 1, n));
+  const views = [stepBrain, stepIot, stepChar, stepHome, stepAlice, stepCheck, stepDone];
+  const nav = h('ul', {class: 'stepper'}, STEPS.map((t, i) => {
+    const d = [ui.brain, ui.iot || (S && S.iot.set), ui.char, ui.home, false, ui.heard, false][i];
+    return h('li', 0, h('button', {type: 'button', class: (i === step ? 'cur ' : '') + (d && i !== 6 ? 'done' : ''), on: {click: () => go(i)}},
+      h('b', 0, d && i !== 6 ? '✓' : i + 1), t));
+  }));
+  const body = h('div', {class: 'card'}, views[step]());
+  const nxt = step < 6 ? btn('Дальше', () => go(step + 1)) : null;
+  const prv = step > 0 ? btn('Назад', () => go(step - 1), 'alt') : h('span');
+  app.replaceChildren(nav, body, h('div', {class: 'nav'}, prv, nxt));
+  window.scrollTo(0, 0);
+}
+
+/* ---------- 1. мозг ---------- */
+function stepBrain() {
+  const out = h('div');
+  return h('div', 0,
+    h('h2', 0, 'Шаг 1. Мозг'),
+    h('p', 0, 'Кореш думает через Anthropic. Ключ лежит в переменной ANTHROPIC_API_KEY в Railway: его туда вставляет сам клиент. Здесь мы только проверяем, что ключ рабочий и на счету есть деньги.'),
+    S.brain_key_set
+      ? note('ok', 'Ключ в переменных есть. Модель: ', h('span', {class: 'mono'}, S.model))
+      : note('bad', 'Ключа ANTHROPIC_API_KEY в переменных нет. Клиент вставляет его в Railway, во вкладке Variables. Сервис перезапустится, потом обнови эту страницу.'),
+    h('p', {class: 'small'}, 'Проверка делает один крошечный платный вызов (доли цента) и только по нажатию кнопки.'),
+    btn('Проверить ключ', async () => {
+      out.replaceChildren(note('info', 'Спрашиваю у мозга…'));
+      const r = await api('check-brain', {});
+      const good = r.ok && r.status === 'ok';
+      out.replaceChildren(note(good ? 'ok' : 'bad', r.message || 'Не получилось.'));
+      if (good) ui.brain = true;
+    }),
+    out);
+}
+
+/* ---------- 2. умный дом ---------- */
+function deviceList(d) {
+  if (!d) return null;
+  const lockLabel = d.locks_enabled ? 'замок: управление по кодовой фразе' : 'заблокирован по умолчанию';
+  return h('div', 0,
+    note('ok', 'Вижу ' + d.count + ' ' + plural(d.count, 'устройство', 'устройства', 'устройств') + (d.scenarios.length ? ' и ' + d.scenarios.length + ' ' + plural(d.scenarios.length, 'сценарий', 'сценария', 'сценариев') : '') + (d.rooms.length ? ' в комнатах: ' + d.rooms.join(', ') : '') + '.'),
+    d.locked_count ? note('warn', 'Замки, ворота и сигнализация (' + d.locked_count + ') ' + (d.locks_enabled ? 'управляются только после кодовой фразы.' : 'заблокированы: голосом их не открыть, пока не включишь это на шаге 4.')) : null,
+    h('ul', {class: 'list'},
+      d.devices.map(x => h('li', 0, h('b', 0, x.name || '(без названия)'), h('span', {class: 'tag'}, x.type), x.room ? h('span', {class: 'small'}, x.room) : null,
+        x.locked ? h('span', {class: 'tag lock'}, lockLabel) : null)),
+      d.scenarios.map(x => h('li', 0, h('b', 0, x.name || '(без названия)'), h('span', {class: 'tag'}, 'сценарий'),
+        x.locked ? h('span', {class: 'tag lock'}, lockLabel) : null))));
+}
+function stepIot() {
+  const out = h('div');
+  const list = h('div');
+  const tok = h('input', {type: 'password', autocomplete: 'off', placeholder: 'Вставь токен сюда', 'aria-label': 'Токен умного дома'});
+  const cid = h('input', {type: 'text', autocomplete: 'off', placeholder: 'ClientID своего приложения', 'aria-label': 'ClientID'});
+  const link = (id) => 'https://oauth.yandex.ru/authorize?response_type=token&client_id=' + encodeURIComponent(id);
+  const myLink = h('div');
+  cid.addEventListener('input', () => {
+    const v = cid.value.trim();
+    myLink.replaceChildren(/^[A-Za-z0-9]{10,64}$/.test(v) ? h('a', {class: 'btn yel', href: link(v), target: '_blank', rel: 'noopener noreferrer'}, 'Войти через Яндекс') : null);
+  });
+
+  const main = S.yandex_client_id
+    ? h('div', 0,
+        h('ol', {class: 'steps'},
+          h('li', 0, 'Нажми кнопку. Откроется Яндекс (вход под аккаунтом, к которому привязана Станция и умные устройства).', h('br'),
+            h('a', {class: 'btn yel', href: link(S.yandex_client_id), target: '_blank', rel: 'noopener noreferrer', style: 'margin-top:8px'}, 'Войти через Яндекс')),
+          h('li', 0, 'Нажми «Разрешить». Яндекс покажет страницу с длинным токеном.'),
+          h('li', 0, 'Скопируй токен целиком и вставь его в поле ниже. Яндекс его потом не покажет.')))
+    : h('div', 0,
+        note('warn', 'Общее приложение «Кореш» не подключено (нет YANDEX_OAUTH_CLIENT_ID). Идём запасным путём: клиент создаёт своё приложение в Яндексе.'),
+        h('ol', {class: 'steps'},
+          h('li', 0, 'Открой ', h('span', {class: 'mono'}, 'oauth.yandex.ru/client/new'), ' под Яндекс ID клиента.', ' ', chk()),
+          h('li', 0, 'Название «koresh», платформа «Веб-сервисы», Redirect URI: ', h('span', {class: 'mono'}, 'https://oauth.yandex.ru/verification_code')),
+          h('li', 0, 'Доступы: «Умный дом», оба: ', h('span', {class: 'mono'}, 'iot:view'), ' и ', h('span', {class: 'mono'}, 'iot:control'), '. Сохрани и скопируй ClientID.'),
+          h('li', 0, 'Вставь ClientID ниже, нажми появившуюся кнопку, на странице Яндекса «Разрешить», скопируй токен.', h('br'), cid, myLink)));
+
+  const check = btn('Проверить и сохранить', async () => {
+    out.replaceChildren(note('info', 'Спрашиваю у Яндекса…'));
+    const r = await api('iot-token', {token: tok.value});
+    if (!r.ok) { out.replaceChildren(note('bad', r.message || 'Не получилось.')); return; }
+    tok.value = '';
+    S.iot = {set: true, source: r.shadowed_by_env ? 'env' : 'setup'};
+    devs = r.devices; ui.iot = true;
+    out.replaceChildren(
+      r.shadowed_by_env ? note('warn', 'Токен рабочий, но в Railway уже задан YANDEX_IOT_TOKEN, и он главнее. Чтобы работал новый, удали старую переменную.') : null,
+      r.persisted ? null : note('warn', 'Диск недоступен: токен сохранён только до перезапуска. Проверь Volume на /data (шаг «Готово» покажет подробности).'),
+      deviceList(devs));
+  });
+
+  const show = btn('Показать устройства', async () => {
+    list.replaceChildren(note('info', 'Загружаю…'));
+    const r = await api('devices');
+    if (!r.ok) { list.replaceChildren(note('bad', r.message || 'Не получилось.')); return; }
+    devs = r.devices; list.replaceChildren(deviceList(devs));
+  }, 'alt');
+
+  return h('div', 0,
+    h('h2', 0, 'Шаг 2. Умный дом'),
+    h('p', 0, 'Без этого Кореш только болтает. Токен даёт ему право включать свет и розетки. Права на замки и ворота у него всё равно нет, пока ты сам не включишь их на шаге 4.'),
+    S.iot.set ? note('ok', 'Токен уже есть ', srcTag(S.iot.source), ' Можно показать устройства или вставить новый токен.') : null,
+    S.iot.set ? h('div', 0, show, list) : null,
+    main,
+    h('label', 0, 'Токен'), tok, check, out);
+}
+
+/* ---------- 3. характер ---------- */
+const TONE_INFO = {
+  derzkiy_mat: ['С матом', 'Дерзкий кореш-матершинник. Мат как приправа, не в каждом слове. Не для тех, кто обидится.'],
+  derzkiy: ['Дерзкий, без мата', 'Колкий, живой, без грубых слов. Хороший выбор по умолчанию.'],
+  vezhlivyy: ['Вежливый', 'Тёплый и спокойный, на «вы», лёгкий юмор. Для тех, кому дерзость не нужна.'],
+};
+function stepChar() {
+  const name = h('input', {type: 'text', maxlength: 30, value: S.name.value, 'aria-label': 'Имя ассистента'});
+  let tone = S.tone.value, gender = S.gender.value;
+  const out = h('div');
+  const toneBox = h('div'), genderBox = h('div');
+  function paint() {
+    toneBox.replaceChildren(...S.tones.map(t => {
+      const r = h('input', {type: 'radio', name: 'tone', checked: tone === t, on: {change: () => { tone = t; paint(); }}});
+      return h('label', {class: 'opt' + (tone === t ? ' sel' : ''), style: 'font-weight:400;margin:8px 0'}, r, h('span', 0, h('b', 0, TONE_INFO[t][0]), TONE_INFO[t][1]));
+    }));
+    const g = (v, title, text) => h('label', {class: 'opt' + (gender === v ? ' sel' : ''), style: 'font-weight:400;margin:8px 0'},
+      h('input', {type: 'radio', name: 'gender', checked: gender === v, on: {change: () => { gender = v; paint(); }}}),
+      h('span', 0, h('b', 0, title), text));
+    genderBox.replaceChildren(
+      g('male', 'Мужской', ['Нейроголос вроде «Филиппа» в консоли Диалогов. Кореш говорит о себе «я вырубил». ', chk()]),
+      g('female', 'Женский', ['Голос Алисы. Кореш говорит о себе «я вырубила».']));
+  }
+  paint();
+  const over = ['name', 'tone', 'gender'].filter(k => S[k].source === 'env');
+  return h('div', 0,
+    h('h2', 0, 'Шаг 3. Характер'),
+    over.length ? note('warn', 'Часть настроек задана в переменных Railway (ASSISTANT_NAME, TONE, GENDER) и главнее этой страницы. Убери их оттуда, если хочешь менять здесь.') : null,
+    h('label', 0, 'Как зовут ассистента'), name,
+    h('p', {class: 'small'}, 'Два-три слога удобнее всего: Алиса лучше распознаёт имя навыка.'),
+    h('h3', 0, 'Тон'), toneBox,
+    h('h3', 0, 'Пол и голос'),
+    h('p', 0, 'Пол обязан совпасть с голосом, который выберешь в консоли Диалогов на шаге 5, иначе мужским голосом будет «я вырубила».'),
+    genderBox,
+    btn('Сохранить', async () => {
+      const r = await api('character', {name: name.value, tone, gender});
+      if (!r.ok) { out.replaceChildren(note('bad', r.message || 'Не получилось.')); return; }
+      S.name.value = name.value.trim(); S.tone.value = tone; S.gender.value = gender; ui.char = true;
+      out.replaceChildren(note('ok', 'Сохранено. Применяется сразу, перезапускать не нужно.'),
+        r.persisted ? null : note('warn', 'Диск недоступен: настройки живут до перезапуска.'));
+    }),
+    out);
+}
+
+/* ---------- 4. дом ---------- */
+function pairEditor(pairs, ph1, ph2, listId) {
+  const wrap = h('div');
+  const add = (a, b) => {
+    const row = h('div', {class: 'row'},
+      h('input', {type: 'text', maxlength: 40, placeholder: ph1, value: a || ''}),
+      h('input', {type: 'text', maxlength: 60, placeholder: ph2, value: b || '', list: listId || null}),
+      h('button', {type: 'button', class: 'x', 'aria-label': 'Убрать', on: {click: () => row.remove()}}, '×'));
+    wrap.append(row);
+  };
+  Object.entries(pairs).forEach(([a, b]) => add(a, b));
+  if (!Object.keys(pairs).length) add('', '');
+  wrap.values = () => [...wrap.querySelectorAll('.row')].map(r => { const i = r.querySelectorAll('input'); return [i[0].value, i[1].value]; });
+  wrap.addRow = () => add('', '');
+  return wrap;
+}
+function stepHome() {
+  const out = h('div');
+  const owner = h('input', {type: 'text', maxlength: 40, value: S.owner || '', placeholder: 'Как к тебе обращаться', 'aria-label': 'Имя хозяина'});
+  const dl = h('datalist', {id: 'rooms-dl'});
+  const people = pairEditor(S.people, 'Имя (Айгуль)', 'Кто это (жена)');
+  const rooms = pairEditor(S.rooms, 'Как говорите (детская)', 'Как названо в Яндексе', 'rooms-dl');
+  let blocked = [...S.blocked];
+  const chips = h('div', {class: 'chips'}), sugg = h('div', {class: 'chips'});
+  const word = h('input', {type: 'text', maxlength: 40, placeholder: 'Слово из названия устройства', 'aria-label': 'Слово'});
+  function paintBlocked() {
+    chips.replaceChildren(...blocked.map(w => h('span', {class: 'chip on', title: 'Убрать', on: {click: () => { blocked = blocked.filter(x => x !== w); paintBlocked(); }}}, w + ' ×')));
+    if (!blocked.length) chips.append(h('span', {class: 'small'}, 'Пока ничего не добавлено.'));
+  }
+  paintBlocked();
+  const addWord = (w) => { w = (w || '').trim().toLowerCase(); if (w && !blocked.includes(w)) { blocked.push(w); paintBlocked(); } };
+  function fillDevices() {
+    if (!devs) return;
+    dl.replaceChildren(...devs.rooms.map(r => h('option', {value: r})));
+    sugg.replaceChildren(...devs.devices.filter(d => !d.locked).map(d => h('span', {class: 'chip', title: 'Добавить в «не трогать»', on: {click: () => addWord(d.name)}}, d.name)));
+  }
+  if (S.iot.set && !devs) api('devices').then(r => { if (r.ok) { devs = r.devices; fillDevices(); } });
+  fillDevices();
+
+  const allow = h('input', {type: 'checkbox', checked: S.allow_locks.value});
+  const phrase = h('input', {type: 'password', autocomplete: 'new-password', maxlength: 80,
+    placeholder: S.lock_phrase.set ? 'Фраза задана. Оставь пустым, чтобы не менять' : 'Кодовая фраза (минимум 6 символов)', 'aria-label': 'Кодовая фраза'});
+  const clear = h('input', {type: 'checkbox'});
+  const hhOver = S.household_source === 'env' || S.blocked_source === 'env' || S.allow_locks.source === 'env' || S.lock_phrase.source === 'env';
+
+  return h('div', 0,
+    h('h2', 0, 'Шаг 4. Дом'),
+    hhOver ? note('warn', 'Что-то из этого задано в переменных Railway (HOUSEHOLD, BLOCKED_NAMES, ALLOW_LOCKS, LOCK_PHRASE) и главнее страницы.') : null,
+    h('label', 0, 'Как обращаться к хозяину'), owner,
+    h('h3', 0, 'Кто есть кто в доме'),
+    h('p', {class: 'small'}, 'Чтобы Кореш понимал «жена» и «Айгуль» как одного человека.'),
+    people, btn('+ ещё человек', () => people.addRow(), 'alt'),
+    h('h3', 0, 'Как зовутся комнаты'),
+    h('p', {class: 'small'}, 'Слева как говорят в семье, справа как комната названа в приложении «Дом с Алисой». Можно несколько строк на одну комнату (синонимы).'),
+    dl, rooms, btn('+ ещё комната', () => rooms.addRow(), 'alt'),
+    h('h3', 0, 'Что не трогать никогда'),
+    h('p', {class: 'small'}, 'Устройства и сценарии, в названии которых есть эти слова, Кореш не тронет. Совпадение по слову: «лампа» закроет все лампы.'),
+    chips,
+    S.iot.set ? sugg : null,
+    h('div', {class: 'row', style: 'grid-template-columns:1fr auto'}, word, btn('Добавить', () => { addWord(word.value); word.value = ''; }, 'alt')),
+    h('h3', 0, 'Замки, ворота, сигнализация'),
+    note('warn', 'По умолчанию выключено. Голос не проверяет, кто говорит: гость скажет «открой замок». Включай только если клиент понимает риск и придумал длинную кодовую фразу.'),
+    h('label', {class: 'opt', style: 'font-weight:700'}, allow, h('span', 0, 'Разрешить замки, ворота и сигнализацию по кодовой фразе')),
+    h('label', 0, 'Кодовая фраза'), phrase,
+    S.lock_phrase.set ? h('label', {class: 'opt', style: 'font-weight:400'}, clear, h('span', 0, 'Стереть сохранённую фразу')) : null,
+    h('p', {class: 'small'}, 'После сохранения фраза нигде не показывается. Её знает только клиент, в карточку клиента её не пишем.'),
+    btn('Сохранить', async () => {
+      const r = await api('home', {owner: owner.value, people: people.values(), rooms: rooms.values(), blocked,
+        allow_locks: allow.checked, lock_phrase: phrase.value, clear_lock_phrase: clear.checked});
+      phrase.value = '';
+      if (!r.ok) { out.replaceChildren(note('bad', r.message || 'Не получилось.')); return; }
+      S.lock_phrase.set = r.locks_enabled || (S.lock_phrase.set && !clear.checked) || false;
+      const st = await api('state'); if (st.ok) { S = st; }
+      ui.home = true;
+      out.replaceChildren(note('ok', 'Сохранено. Применяется сразу.'),
+        r.locks_enabled ? note('warn', 'Замки включены: управлять ими можно только после кодовой фразы.') : note('info', 'Замки выключены.'),
+        r.persisted ? null : note('warn', 'Диск недоступен: настройки живут до перезапуска.'));
+    }),
+    out);
+}
+
+/* ---------- 5. Алиса ---------- */
+function stepAlice() {
+  const w = S.webhook;
+  const out = h('div');
+  const nm = S.name.value, male = S.gender.value === 'male';
+  return h('div', 0,
+    h('h2', 0, 'Шаг 5. Навык в Алисе'),
+    h('p', 0, 'Алиса станет для Кореша ушами и ртом. Для этого в Яндекс Диалогах создаётся приватный навык, который ходит на этот адрес.'),
+    w.secret_set
+      ? h('div', 0, h('div', {class: 'url mono', id: 'wh'}, w.url),
+          btn('Скопировать адрес', async (b) => { const ok = await copyText(w.url); out.replaceChildren(ok ? note('ok', 'Скопировано.') : (selectNode(document.getElementById('wh')), note('warn', 'Само не скопировалось. Адрес выделен: нажми на него и удерживай, выбери «Копировать».'))); }),
+          out,
+          h('p', {class: 'small'}, 'Адрес секретный: в нём ключ доступа. Не слать в чат и не показывать в записи экрана.'))
+      : note('bad', 'WEBHOOK_SECRET не задан, вебхук закрыт для всех. Секрет создаёт шаблон Railway; без него навык работать не будет.'),
+    h('ol', {class: 'steps'},
+      h('li', 0, 'Открой ', h('span', {class: 'mono'}, 'dialogs.yandex.ru/developer'), ' под Яндекс ID клиента, том же, что у Станции.', h('br'),
+        h('span', {class: 'mock btnm'}, 'Создать диалог'), ' → ', h('span', {class: 'mock btnm'}, 'Навык в Алисе'), ' ', chk()),
+      h('li', 0, 'Название и фраза активации: ', h('b', 0, nm), '.', h('br'),
+        h('span', {class: 'mock'}, 'Название: ' + nm), ' ', h('span', {class: 'mock'}, 'Активационное имя: ' + nm.toLowerCase()), ' ', chk()),
+      h('li', 0, 'Backend: Webhook URL. Вставь адрес из жёлтого блока выше.', h('br'), h('span', {class: 'mock'}, 'Webhook URL: https://…/alice/••••••••'), ' ', chk()),
+      h('li', 0, 'Доступ: ', h('b', 0, 'Приватный'), '. Поверхности: колонки и приложение. Сохрани.', h('br'),
+        h('span', {class: 'mock'}, '(•) Приватный'), ' ', chk()),
+      h('li', 0, 'Голос навыка: ', h('b', 0, male ? 'мужской (нейроголос, например «Филипп»)' : 'голос Алисы (женский)'), '. Пол ассистента на шаге 3 сейчас: ', h('b', 0, male ? 'мужской' : 'женский'), '. Не совпадает: вернись на шаг 3.', ' ',
+        chk(), h('div', {class: 'small'}, 'Не подтверждено докой: как называется пункт выбора голоса и какие голоса доступны навыку на Станции.')),
+      h('li', 0, 'Вкладка «Тестирование»: напиши «привет». Должен прийти ответ. Потом иди на шаг 6, там страница сама услышит Яндекс.', ' ', chk()),
+      h('li', 0, 'Для публикации Яндекс просит примеры фраз, имя разработчика, категорию, описание, иконку 224x224. Для личного пользования хватает приватного черновика.', ' ', chk())),
+    h('p', {class: 'small'}, 'Схемы с пунктирной рамкой нарисованы по документации, это не скриншоты. Пометка «ПРОВЕРИТЬ»: подпись в интерфейсе Яндекса могла отличаться, сверяемся по факту и записываем.'),
+    null);
+}
+
+/* ---------- 6. проверка ---------- */
+function stepCheck() {
+  const status = h('div', {class: 'note info big'}, h('span', {class: 'pulse'}), 'Жду, пока Яндекс постучится…');
+  const out = h('div');
+  let since = 1e12;
+  function heardUI(r) {
+    ui.heard = true; stopPoll();
+    const said = r.kind === 'ping' ? 'Яндекс достучался (проверка связи).' : 'Кореш тебя услышал: «' + r.text + '»';
+    status.className = 'note ok big'; status.replaceChildren(said);
+  }
+  async function tick() {
+    const r = await api('heard?since=' + since);
+    if (r.ok && r.heard) heardUI(r);
+  }
+  api('heard?since=1e12').then(r => { if (r.ok) { since = r.now; pollTimer = setInterval(tick, 2000); } });
+  return h('div', 0,
+    h('h2', 0, 'Шаг 6. Проверка'),
+    h('p', 0, 'Скажи колонке: «Алиса, запусти навык ', h('b', 0, S.name.value), '», потом «привет». Либо напиши «привет» во вкладке «Тестирование» в консоли Диалогов. Страница сама поймает запрос.'),
+    status,
+    h('h3', 0, 'Без Станции'),
+    h('p', 0, 'Кнопка шлёт тестовую реплику на этот же вебхук. Так видно, что мозг и связка работают, даже пока навык ещё не создан. Это один обычный вызов мозга (доли цента).'),
+    btn('Тест без Станции', async () => {
+      out.replaceChildren(note('info', 'Спрашиваю у Кореша…'));
+      const r = await api('self-test', {});
+      if (!r.ok) { out.replaceChildren(note('bad', r.message || 'Тест не прошёл.')); return; }
+      out.replaceChildren(note('ok', 'Кореш ответил: «' + r.text + '»'));
+    }, 'yel'),
+    out);
+}
+
+/* ---------- 7. готово ---------- */
+function stepDone() {
+  const out = h('div');
+  const row = (ok, text) => h('li', 0, h('span', {class: 'tag ' + (ok ? '' : 'lock')}, ok ? 'есть' : 'нет'), text);
+  return h('div', 0,
+    h('h2', 0, 'Шаг 7. Готово'),
+    h('p', 0, 'Сводка перед закрытием. Красное можно не чинить, но тогда лучше знать, чего не хватает.'),
+    h('ul', {class: 'list'},
+      row(S.brain_key_set && ui.brain, 'Мозг: ключ проверен на шаге 1' + (S.brain_key_set && !ui.brain ? ' (ключ есть, но кнопку проверки не нажимали)' : '')),
+      row(S.iot.set, 'Умный дом: токен подключён'),
+      row(S.webhook.secret_set, 'Вебхук: секрет задан'),
+      row(ui.heard, 'Яндекс достучался до вебхука' + (ui.heard ? '' : ' (на шаге 6 ещё не было запроса)')),
+      row(S.memory === 'disk', S.memory === 'disk' ? 'Память: диск доступен' : 'Память: диск недоступен, Кореш будет забывать при перезапуске (нужен Volume на /data и RAILWAY_RUN_UID=0)'),
+      h('li', 0, h('span', {class: 'tag'}, 'замки'), S.allow_locks.value ? 'Включены, только по кодовой фразе' : 'Выключены (так и должно быть по умолчанию)')),
+    note('warn', 'После завершения страница закрывается. Потом удали переменную SETUP_CODE в Railway (шаг не обязателен, но так надёжнее). Вернуться сюда можно только с кодом.'),
+    S.callback ? h('p', {class: 'small'}, 'После завершения сервер отправит нам короткое «установлено»: без ключей клиента и без разговоров.') : null,
+    btn('Завершить установку', async () => {
+      if (!confirm('Закрыть страницу настройки?')) return;
+      const r = await api('finish', {});
+      if (!r.ok) { out.replaceChildren(note('bad', r.message || 'Не получилось.')); return; }
+      setLogout(false);
+      const cb = {sent: 'Сообщение «установлено» отправлено.', failed: 'Сообщение «установлено» отправить не вышло. Установка от этого не страдает, оператору сказать на словах.', off: ''}[r.callback] || '';
+      app.replaceChildren(h('div', {class: 'card'}, h('h1', 0, 'Готово'),
+        note('ok', 'Кореш настроен. Страница закрыта.'), cb ? note(r.callback === 'sent' ? 'info' : 'warn', cb) : null,
+        h('p', 0, 'Теперь удали переменную SETUP_CODE в Railway. Чтобы поменять настройки, вернись на ', h('span', {class: 'mono'}, '/setup'), ' с кодом.')));
+    }),
+    out);
+}
+
+/* ---------- запуск ---------- */
+(async function init() {
+  const r = await api('me');
+  if (r.ok && r.authed) { start(); return; }
+  if (r.status === 404) { app.replaceChildren(h('p', 0, 'Страница настройки выключена.')); return; }
+  if (r.ok && r.closed) { renderLogin('Настройка уже завершена.', true); return; }
+  renderLogin(r.locked_for ? 'Слишком много неверных кодов, подожди.' : null);
+})();
+</script>
+</body>
+</html>

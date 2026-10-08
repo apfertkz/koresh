@@ -1,0 +1,14 @@
+# секреты и локальные значения
+.env
+.env.*
+!.env.example
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+# данные и локальные артефакты
+/data/
+*.log
+.DS_Store

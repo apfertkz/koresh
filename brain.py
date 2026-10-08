@@ -1,0 +1,162 @@
+"""Мозг: Claude API + инструменты умного дома. Один ход диалога с циклом инструментов."""
+import json
+
+import config as C
+import iot
+import memory
+import prompts
+import usage
+
+_client = None
+
+TOOLS = [
+    {
+        "name": "list_devices",
+        "description": "Список устройств умного дома, групп и сценариев хозяина с их id, комнатой и текущим состоянием. Вызывай перед управлением, если не знаешь id.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "control_device",
+        "description": "Отправить команду устройству или группе либо запустить сценарий умного дома Яндекса.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "enum": ["device", "group", "scenario"]},
+                "target_id": {"type": "string"},
+                "capability": {"type": "string", "description": "напр. devices.capabilities.on_off, devices.capabilities.range, devices.capabilities.color_setting, devices.capabilities.mode, devices.capabilities.toggle. Для scenario не нужен."},
+                "instance": {"type": "string", "description": "напр. on, brightness, temperature, hsv, thermostat"},
+                "value": {"description": "bool / number / object в зависимости от умения"},
+            },
+            "required": ["target", "target_id"],
+        },
+    },
+    {
+        "name": "remember",
+        "description": "Запомнить НАДОЛГО устойчивый факт о хозяине: имена близких, вкусы, работа, привычки, на что болеет, обещание вернуться к теме. Одна короткая фраза до 200 символов («не ест лук», «жену зовут Айгуль»). Не вызывай для мелочей на один раз и НИКОГДА для паролей, кодов, номеров карт и других секретов. Вызывай тихо, не объявляя об этом.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"fact": {"type": "string", "description": "короткий факт, до 200 символов"}},
+            "required": ["fact"],
+        },
+    },
+    {
+        "name": "forget",
+        "description": "Стереть память по просьбе хозяина. fact: что забыть (лучше теми же словами, что в заметках). all=true: стереть вообще всё, что помнишь о хозяине и прошлых разговорах («забудь всё»).",
+        "input_schema": {
+            "type": "object",
+            "properties": {"fact": {"type": "string"}, "all": {"type": "boolean"}},
+        },
+    },
+]
+
+
+async def _create(**kw):
+    """Единственная точка выхода к Anthropic. Ворота подменяют её заглушкой."""
+    global _client
+    if _client is None:
+        from anthropic import AsyncAnthropic
+        _client = AsyncAnthropic(api_key=C.anthropic_key())
+    return await _client.messages.create(**kw)
+
+
+def _recent_user_text(history: list[dict], n: int = 2) -> str:
+    """Последние реплики хозяина дословно (не пересказ модели) — по ним проверяется кодовая фраза."""
+    texts = [m["content"] for m in history if m.get("role") == "user" and isinstance(m.get("content"), str)]
+    return " ".join(texts[-n:])
+
+
+def _tokens(resp) -> int:
+    u = getattr(resp, "usage", None)
+    if u is None:
+        return 0
+    return sum(int(getattr(u, k, 0) or 0) for k in
+               ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+
+
+def request_params() -> dict:
+    """Параметры запроса, не зависящие от истории. Нет temperature/top_p, thinking:disabled, forced tool_choice и
+    prefill: на sonnet-5-5 это 400. effort идёт через extra_body, чтобы не зависеть от версии SDK (в 0.69.0 нет поля)."""
+    kw = {"model": C.model(), "max_tokens": C.max_tokens()}
+    if C.supports_effort():
+        kw["extra_body"] = {"output_config": {"effort": C.effort()}}
+    return kw
+
+
+# признаки 400 про привязку thinking-блоков к истории (а не про деньги, effort или кривые параметры)
+HISTORY_400_MARKERS = ("signature", "different conversation", "block_binding", "prefix_mismatch", "prefix mismatch",
+                       "thinking block", "redacted_thinking", "cannot be modified")
+
+
+def _is_status(e: Exception, code: int, *names: str) -> bool:
+    return getattr(e, "status_code", None) == code or any(c.__name__ in names for c in type(e).__mro__)
+
+
+def error_kind(e: Exception) -> str:
+    """auth | billing | busy | history | bad | down. Текст ошибки читаем только для классификации, наружу он не идёт."""
+    msg = str(e).lower()
+    code = getattr(e, "status_code", None)
+    if _is_status(e, 401, "AuthenticationError") or _is_status(e, 403, "PermissionDeniedError"):
+        return "auth"
+    if code == 402 or any(k in msg for k in ("credit balance", "billing", "usage limit", "spend limit")):
+        return "billing"
+    if code in (429, 529) or (isinstance(code, int) and code >= 500) \
+            or any(c.__name__ in ("RateLimitError", "InternalServerError", "OverloadedError") for c in type(e).__mro__):
+        return "busy"
+    if _is_status(e, 400, "BadRequestError"):
+        if any(k in msg for k in HISTORY_400_MARKERS):
+            return "history"
+        return "bad"
+    return "down"
+
+
+def is_history_error(e: Exception) -> bool:
+    return error_kind(e) == "history"
+
+
+def _refusal_category(resp):
+    sd = getattr(resp, "stop_details", None)
+    return sd.get("category") if isinstance(sd, dict) else getattr(sd, "category", None)
+
+
+async def think(history: list[dict], uid: str | None = None) -> str:
+    """history — список messages, будет дополнен (только в конец). uid — чья долгая память (remember/forget)."""
+    system = [{"type": "text", "text": prompts.system_prompt(), "cache_control": {"type": "ephemeral"}}]
+    for _ in range(5):
+        if usage.exceeded():
+            return prompts.phrase("limit")
+        resp = await _create(system=system, tools=TOOLS, messages=history, **request_params())
+        usage.add(_tokens(resp))
+        if resp.stop_reason == "refusal":      # классификатор отказал; пустой ход в историю не кладём
+            print(f"brain refusal: {_refusal_category(resp)}", flush=True)
+            return prompts.phrase("refusal")
+        history.append({"role": "assistant", "content": resp.content})
+        if resp.stop_reason != "tool_use":
+            text = "".join(b.text for b in resp.content if b.type == "text").strip()
+            if text:
+                return text
+            return prompts.phrase("cut") if resp.stop_reason == "max_tokens" else "Готово."
+
+        results = []
+        for block in resp.content:
+            if block.type != "tool_use":
+                continue
+            a = block.input
+            try:
+                if block.name == "list_devices":
+                    out = json.dumps(await iot.devices(), ensure_ascii=False)
+                elif block.name == "control_device":
+                    out = await iot.control(a["target"], a["target_id"], a.get("capability", ""),
+                                            a.get("instance", ""), a.get("value"), _recent_user_text(history))
+                elif block.name == "remember":
+                    out = memory.store_for(uid).remember(str(a.get("fact", "")))[1] if uid else "error: память недоступна"
+                elif block.name == "forget":
+                    out = memory.store_for(uid).forget(str(a.get("fact", "")), bool(a.get("all"))) if uid \
+                        else "error: память недоступна"
+                else:
+                    out = "unknown tool"
+            except Exception as e:  # noqa: BLE001
+                print(f"tool error [{block.name}]: {type(e).__name__}", flush=True)
+                out = "error: умный дом не ответил"
+            results.append({"type": "tool_result", "tool_use_id": block.id, "content": str(out)[:6000]})
+        history.append({"role": "user", "content": results})
+    return "Что-то пошло не так, повтори."
