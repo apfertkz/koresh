@@ -1695,8 +1695,8 @@ hits = []
 for f in sorted(HERE.rglob("*")):
     if not f.is_file() or any(x in f.parts for x in (".git", "__pycache__", ".venv")):
         continue
-    # CI-файлы и README про образ: там адрес репозитория и реестра, это законно
-    if f.relative_to(HERE).parts[0] == ".git" + "hub" or f.name == "README.md":
+    # CI-файлы, README про образ и LICENSE (там правообладатель): это законно
+    if f.relative_to(HERE).parts[0] == ".git" + "hub" or f.name in ("README.md", "LICENSE"):
         continue
     try:
         for i, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
