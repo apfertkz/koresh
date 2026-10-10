@@ -2,6 +2,7 @@
 import json
 
 import config as C
+import honesty
 import iot
 import memory
 import prompts
@@ -121,6 +122,18 @@ def _refusal_category(resp):
 async def think(history: list[dict], uid: str | None = None) -> str:
     """history — список messages, будет дополнен (только в конец). uid — чья долгая память (remember/forget)."""
     system = [{"type": "text", "text": prompts.system_prompt(), "cache_control": {"type": "ephemeral"}}]
+    journal = honesty.Journal()          # что за этот ход реально сделано с умным домом
+
+    def finish(text: str) -> str:
+        """Утверждение «сделал» без успешного действия -> честная фраза (и в истории тоже, чтобы модель не верила вранью)."""
+        fixed = honesty.check(text, journal)
+        if fixed != text:
+            print("honesty: заявление о действии без успешного вызова заменено", flush=True)
+            kept = [b for b in history[-1]["content"] if getattr(b, "type", None) != "text"] \
+                if isinstance(history[-1].get("content"), list) else []
+            history[-1] = {"role": "assistant", "content": kept + [{"type": "text", "text": fixed}]}
+        return fixed
+
     for _ in range(5):
         if usage.exceeded():
             return prompts.phrase("limit")
@@ -133,8 +146,8 @@ async def think(history: list[dict], uid: str | None = None) -> str:
         if resp.stop_reason != "tool_use":
             text = "".join(b.text for b in resp.content if b.type == "text").strip()
             if text:
-                return text
-            return prompts.phrase("cut") if resp.stop_reason == "max_tokens" else "Готово."
+                return finish(text)
+            return prompts.phrase("cut") if resp.stop_reason == "max_tokens" else finish("Готово.")
 
         results = []
         for block in resp.content:
@@ -143,20 +156,30 @@ async def think(history: list[dict], uid: str | None = None) -> str:
             a = block.input
             try:
                 if block.name == "list_devices":
-                    out = json.dumps(await iot.devices(), ensure_ascii=False)
+                    listing = await iot.devices()
+                    if isinstance(listing, dict) and listing.get("error"):
+                        journal.list_failed(str(listing["error"]))
+                    out = json.dumps(listing, ensure_ascii=False)
                 elif block.name == "control_device":
                     out = await iot.control(a["target"], a["target_id"], a.get("capability", ""),
                                             a.get("instance", ""), a.get("value"), _recent_user_text(history))
+                    journal.control(str(a.get("target", "")), out)
                 elif block.name == "remember":
                     out = memory.store_for(uid).remember(str(a.get("fact", "")))[1] if uid else "error: память недоступна"
+                    journal.memory(not out.startswith(("error", "refused")))
                 elif block.name == "forget":
                     out = memory.store_for(uid).forget(str(a.get("fact", "")), bool(a.get("all"))) if uid \
                         else "error: память недоступна"
+                    journal.memory(not out.startswith(("error", "refused")))
                 else:
                     out = "unknown tool"
             except Exception as e:  # noqa: BLE001
                 print(f"tool error [{block.name}]: {type(e).__name__}", flush=True)
                 out = "error: умный дом не ответил"
+                if block.name == "control_device":
+                    journal.control(str(a.get("target", "")), out)
+                elif block.name == "list_devices":
+                    journal.list_failed(out)
             results.append({"type": "tool_result", "tool_use_id": block.id, "content": str(out)[:6000]})
         history.append({"role": "user", "content": results})
     return "Что-то пошло не так, повтори."

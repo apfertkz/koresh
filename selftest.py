@@ -324,7 +324,7 @@ os.environ["HOLD_TIMEOUT"] = "0.4"
 
 async def slow(**kw):
     await asyncio.sleep(0.9)
-    return text_resp("Свет в спальне включил.")
+    return text_resp("В спальне тихо, жду команд.")
 
 brain._create = slow
 fresh("d")
@@ -344,8 +344,8 @@ first, t1, second, t2, third = run(scenario_slow())
 check("6a. заглушка отдана в бюджет (HOLD_TIMEOUT + запас)", t1 < 0.4 + 0.35, f"{t1:.2f}с")
 check("6b. заглушка из набора фраз", first["response"]["text"] in prompts.PHRASES["derzkiy"]["hold"], repr(first))
 check("6c. первый переспрос тоже укладывается и не теряет мысль",
-      t2 < 0.4 + 0.35 and second["response"]["text"] in prompts.PHRASES["derzkiy"]["still"] + ["Свет в спальне включил."], f"{t2:.2f}с {second}")
-check("6d. переспрос отдаёт готовый ответ", "Свет в спальне включил." in (second["response"]["text"], third["response"]["text"]))
+      t2 < 0.4 + 0.35 and second["response"]["text"] in prompts.PHRASES["derzkiy"]["still"] + ["В спальне тихо, жду команд."], f"{t2:.2f}с {second}")
+check("6d. переспрос отдаёт готовый ответ", "В спальне тихо, жду команд." in (second["response"]["text"], third["response"]["text"]))
 check("6e. дефолтный HOLD_TIMEOUT укладывается в 3 секунды",
       (os.environ.pop("HOLD_TIMEOUT"), C.hold_timeout())[1] <= 4.0)
 
@@ -1681,6 +1681,335 @@ setupwiz.reset_for_tests()
 setupwiz._TRANSPORT = None
 C._MEM_ONLY.clear()
 reset_all()
+
+# ================= 18. честность о действиях: «включил» без успешного вызова подменяется =================
+import honesty  # noqa: E402
+
+_YANDEX_OK = iot._TRANSPORT
+
+
+def scripted(*steps):
+    """Модель по сценарию: каждый вызов отдаёт следующий ответ."""
+    it = iter(steps)
+
+    async def _c(**kw):
+        return next(it)
+    return _c
+
+
+def hon_handler(mode):
+    def _h(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path.endswith("/user/info"):
+            return httpx.Response(200, json={"status": "ok", **USER_INFO})
+        CALLS.append((request.method, request.url.path, None))
+        if mode == "unreachable":
+            return httpx.Response(200, json={"status": "ok", "devices": [{"id": "lamp-bed", "capabilities": [
+                {"type": "devices.capabilities.on_off", "state": {"instance": "on", "action_result": {
+                    "status": "ERROR", "error_code": "DEVICE_UNREACHABLE"}}}]}]})
+        if mode == "http500":
+            return httpx.Response(500, text="boom")
+        if mode == "token":
+            return httpx.Response(401, json={"status": "error"})
+        if mode == "raise":
+            raise httpx.ConnectError("нет связи")
+        return httpx.Response(200, json={"status": "ok"})
+    return _h
+
+
+def lamp_turn(final_text, mode="ok", second_control=False):
+    steps = [tool_resp("h1", "list_devices", {}),
+             tool_resp("h2", "control_device", {"target": "device", "target_id": "lamp-bed",
+                                                "capability": "devices.capabilities.on_off", "instance": "on", "value": True})]
+    if second_control:
+        steps.append(tool_resp("h3", "control_device", {"target": "device", "target_id": "lock1",
+                                                        "capability": "devices.capabilities.on_off", "instance": "on", "value": True}))
+    steps.append(text_resp(final_text))
+    return steps
+
+
+def think_once(steps, mode="ok", uid=None):
+    keep = {k: os.environ.get(k) for k in ("GENDER", "TONE")}
+    reset_all()
+    for k, v in keep.items():
+        if v is not None:
+            os.environ[k] = v
+    os.environ["YANDEX_IOT_TOKEN"] = "test-iot-token"
+    iot._TRANSPORT = httpx.MockTransport(hon_handler(mode))
+    brain._create = scripted(*steps)
+    hist = [{"role": "user", "content": "включи свет в спальне"}]
+    out = run(brain.think(hist, uid))
+    iot._TRANSPORT = _YANDEX_OK
+    return out, hist
+
+
+ALL_BAD = True
+for g, claim_txt, did_not in (("male", "Включил свет в спальне.", "не сделал"), ("female", "Включила свет в спальне.", "не сделала")):
+    for t in C.TONES:
+        os.environ["GENDER"] = g
+        os.environ["TONE"] = t
+        # а) инструмент не вызывался
+        out, hist = think_once([text_resp(claim_txt)])
+        ok_a = (out != claim_txt and "лючил" not in out and did_not in out and "не дошла" in out
+                and not any(c[0] == "POST" for c in CALLS))
+        if g == "male":
+            ok_a = ok_a and "не сделала" not in out
+        else:
+            ok_a = ok_a and not re.search(r"не сделал(?!а)", out)
+        check(f"18a. {t}/{g}: «{claim_txt[:8]}» без вызова -> честная замена в своём роде", ok_a, out)
+        # история тоже честная
+        last = hist[-1]
+        check(f"18a2. {t}/{g}: в истории вранья нет", last["role"] == "assistant"
+              and all("лючил" not in (b.get("text", "") if isinstance(b, dict) else getattr(b, "text", "")) for b in last["content"]))
+        # б) успех
+        out, _ = think_once(lamp_turn(claim_txt))
+        check(f"18b. {t}/{g}: успешный iot -> текст как есть", out == claim_txt and len(post_calls()) == 1, out)
+        # в) ошибка устройства
+        for mode, why in (("unreachable", "устройство не на связи"), ("http500", "Яндекс ответил ошибкой 500"),
+                          ("token", "токен умного дома не принят"), ("raise", "умный дом не ответил")):
+            out, _ = think_once(lamp_turn(claim_txt), mode)
+            check(f"18c. {t}/{g}/{mode}: ошибка iot -> «не вышло» с причиной", why in out and "лючил" not in out
+                  and out.startswith(("Не вышло", "Хуйня, не вышло", "Не получилось")), out)
+os.environ.pop("GENDER", None)
+os.environ["TONE"] = "derzkiy"
+
+# замок: отказ сервера -> причина про настройки
+out, _ = think_once([tool_resp("k1", "control_device", {"target": "device", "target_id": "lock1",
+                                                          "capability": "devices.capabilities.on_off", "instance": "on", "value": True}),
+                     text_resp("Открыл замок.")], uid=None)
+check("18d. замок отключён, а модель врёт «открыл» -> причина «отключено в настройках»",
+      "отключено в настройках" in out and "Открыл" not in out, out)
+# смешанный ход: лампа ок, замок отказал, модель отчиталась за всё
+out, _ = think_once(lamp_turn("Включил всё.", second_control=True))
+check("18e. часть вышла, часть нет, модель врёт про всё -> «получилось не всё» с причиной",
+      out.startswith("Получилось не всё") and "отключено" in out, out)
+out, _ = think_once(lamp_turn("Лампу включил, а замок не открыл: он отключён в настройках.", second_control=True))
+check("18f. часть вышла, модель сама честно сказала про неудачу -> текст как есть",
+      out == "Лампу включил, а замок не открыл: он отключён в настройках.", out)
+
+# «Готово» после remember: память записана, это правда; без ничего -- враньё
+out, _ = think_once([tool_resp("m1", "remember", {"fact": "жену зовут Айгуль"}), text_resp("Готово.")], uid="hon-u1")
+check("18g. «Готово» после успешного remember -> как есть", out == "Готово.", out)
+out, _ = think_once([text_resp("Готово!")])
+check("18h. «Готово!» без единого действия -> замена", out != "Готово!" and "не сделал" in out, out)
+out, _ = think_once([Resp([], "end_turn")])
+check("18i. пустой ответ модели без действий (старое «Готово.») -> замена", out != "Готово." and "не сделал" in out, out)
+out, _ = think_once(lamp_turn("") if False else [tool_resp("h1", "list_devices", {}),
+                    tool_resp("h2", "control_device", {"target": "device", "target_id": "lamp-bed", "capability": "devices.capabilities.on_off",
+                                                       "instance": "on", "value": True}), Resp([], "end_turn")])
+check("18j. пустой финал после успешного iot -> «Готово.» как раньше", out == "Готово.", out)
+
+# список глаголов: каждый ловится без вызова, и не ловятся отрицания и не-утверждения
+CLAIMS = ["Включил свет", "Выключила свет", "Вырубил лампу", "Врубила телек", "Зажёг свет", "Зажгла свет", "Погасил", "Потушила",
+          "Поставил таймер на пять минут", "Установила яркость", "Запустил сценарий", "Запустила кино", "Сделал", "Сделала.",
+          "Открыл ворота", "Закрыла ставни", "Добавил в список", "Убавил звук", "Прибавила свет", "Сменил режим",
+          "Отправил сообщение жене", "Позвонила маме", "Заказал пиццу", "Готово.", "Всё готово!", "Сделано.", "Да, уже готово.",
+          "Хорошо, свет включил."]
+NOT_CLAIMS = ["Не включил: замки отключены.", "Я не выключила, нет такой лампы.", "Включаю, секунду.", "Могу включить, скажи какую.",
+              "Лампа сейчас включена.", "Три минуты вари.", "Не сделала: нужна кодовая фраза.", "Ни хрена не включил, Яндекс молчит.",
+              "Какую комнату включить?", "Готов к работе."]
+miss = [c for c in CLAIMS if not honesty.claims_action(c)]
+check("18k. все глаголы-утверждения (оба рода) ловятся", not miss, str(miss))
+false_pos = [c for c in NOT_CLAIMS if honesty.claims_action(c)]
+check("18l. отрицания, будущее, состояние и вопросы не ловятся", not false_pos, str(false_pos))
+bad = []
+for c in CLAIMS:
+    out, _ = think_once([text_resp(c)])
+    if out == c:
+        bad.append(c)
+check("18m. каждое утверждение без вызова реально заменяется ходом мозга", not bad, str(bad))
+bad = []
+for c in NOT_CLAIMS:
+    out, _ = think_once([text_resp(c)])
+    if out != c:
+        bad.append(c)
+check("18n. не-утверждения проходят ходом мозга без изменений", not bad, str(bad))
+
+# честные фразы: тон, род, мат только в derzkiy_mat
+for t in C.TONES:
+    for g in ("male", "female"):
+        for kind in ("fail", "none", "partial"):
+            ph = prompts.honest(kind, "причина", t, g)
+            good = "причина" in ph and (("не сделала" in ph) if g == "female" and kind != "partial" else "не сделала" not in ph)
+            if t != "derzkiy_mat":
+                good = good and not MAT_RE.search(ph)
+            check(f"18o. honest {t}/{g}/{kind}: причина, род, мат только где положено", good, ph)
+check("18p. derzkiy_mat: в честной фразе мат есть, он тут к месту", bool(MAT_RE.search(prompts.honest("fail", "x", "derzkiy_mat", "male"))))
+
+# системный промпт: правило есть, в своём роде, и без утечек
+for g, must in (("male", "«включил»"), ("female", "«включила»")):
+    sp = prompts.system_prompt(tone="derzkiy", gender=g)
+    check(f"18q. промпт {g}: правило «говори только правду о сделанном» в своём роде", "Про сделанное говори только правду" in sp and must in sp)
+
+# через разговор целиком: ответ Алисе тоже честный
+reset_all()
+os.environ["YANDEX_IOT_TOKEN"] = "test-iot-token"
+brain._create = scripted(text_resp("Включил свет в спальне."))
+fresh("hon-m")
+r = run(main.handle("hon-m", "включи свет в спальне", False))
+check("18r. ответ Алисе тоже честный (main.handle)", r["response"]["text"] != "Включил свет в спальне." and "не сделал" in r["response"]["text"], repr(r))
+st = main.STATE["hon-m"]
+check("18s. в истории диалога у пользователя вранья нет", all("Включил свет" not in json.dumps(
+    [getattr(b, "text", b.get("text", "") if isinstance(b, dict) else "") for b in m["content"]], ensure_ascii=False)
+    for m in st.dialog if m["role"] == "assistant" and isinstance(m["content"], list)))
+reset_all()
+os.environ["YANDEX_IOT_TOKEN"] = "test-iot-token"
+
+
+# ================= 19. страница /setup: ссылки, «скопировать», голос, токен, названия (настоящая отрисовка в node) =================
+import shutil  # noqa: E402
+import subprocess  # noqa: E402
+
+DOM_JS = r"""
+const fs = require('fs'), vm = require('vm');
+const html = fs.readFileSync(process.argv[2], 'utf8');
+const scen = JSON.parse(process.argv[3]);
+const js = html.split('<script>')[1].split('</script>')[0];
+class Txt { constructor(t) { this.nodeType = 3; this.text = String(t); } }
+class Element {
+  constructor(tag) { this.tag = tag; this.attrs = {}; this.children = []; this.handlers = {}; this.nodeType = 1; this.value = ''; this.disabled = false; this.classList = {toggle() {}, add() {}, remove() {}}; }
+  setAttribute(k, v) { this.attrs[k] = String(v); }
+  set className(v) { this.attrs['class'] = v; }
+  get className() { return this.attrs['class'] || ''; }
+  append(...k) { for (const c of k) this.children.push(typeof c === 'string' ? new Txt(c) : c); }
+  replaceChildren(...k) { this.children = []; this.append(...k); }
+  addEventListener(ev, fn) { (this.handlers[ev] = this.handlers[ev] || []).push(fn); }
+  set textContent(v) { this.children = [new Txt(v)]; }
+  remove() {} focus() {} select() {} setSelectionRange() {}
+}
+const reg = {};
+const COPIED = [];
+const ctx = {
+  Element, console, Promise, JSON, Object, Array, String, Number, RegExp, encodeURIComponent, Math, Date, setTimeout,
+  document: {createElement: t => new Element(t), createTextNode: t => new Txt(t), getElementById: id => (reg[id] = reg[id] || new Element('div')),
+             body: new Element('body'), execCommand: () => false},
+  window: {scrollTo() {}, getSelection: () => ({removeAllRanges() {}, addRange() {}})},
+  navigator: {clipboard: {writeText: t => { COPIED.push(t); return Promise.resolve(); }}},
+  fetch: async () => ({status: 200, ok: true, json: async () => ({authed: false})}),
+  confirm: () => true, setInterval: () => 1, clearInterval() {},
+  Range: class {}, 
+};
+ctx.document.createRange = () => ({selectNodeContents() {}});
+ctx.globalThis = ctx;
+vm.createContext(ctx);
+vm.runInContext(js + "\n;globalThis.__T = {setS(v) { S = v; }, stepIot, stepAlice, stepCheck};", ctx);
+function ser(n) { return n.nodeType === 3 ? n.text : {t: n.tag, a: n.attrs, v: n.value, c: n.children.map(ser)}; }
+function walk(n, f) { f(n); if (n.nodeType === 1) n.children.forEach(c => walk(c, f)); }
+(async () => {
+  const out = [];
+  for (const sc of scen) {
+    ctx.__T.setS(sc.S);
+    COPIED.length = 0;
+    const tree = ctx.__T[sc.fn]();
+    const clicks = [];
+    walk(tree, n => { if (n.nodeType === 1 && n.tag === 'button' && (n.attrs['class'] || '').includes('sm')) clicks.push(n); });
+    for (const b of clicks) for (const fn of (b.handlers.click || [])) await fn();
+    out.push({tree: ser(tree), copied: COPIED.slice()});
+  }
+  console.log(JSON.stringify(out));
+})();
+"""
+
+
+def _walk(n, f):
+    f(n)
+    if isinstance(n, dict):
+        for c in n["c"]:
+            _walk(c, f)
+
+
+def _text(n):
+    if isinstance(n, str):
+        return n
+    return "".join(_text(c) for c in n["c"])
+
+
+def _nodes(tree, tag):
+    res = []
+    _walk(tree, lambda n: res.append(n) if isinstance(n, dict) and n["t"] == tag else None)
+    return res
+
+
+def _S(gender="male", name="Кореш", cid=""):
+    return {"name": {"value": name, "source": "default"}, "gender": {"value": gender, "source": "default"}, "yandex_client_id": cid,
+            "iot": {"set": False, "source": ""}, "webhook": {"secret_set": True, "url": "https://k.up.railway.app/alice/SECRETXYZ"},
+            "tone": {"value": "derzkiy", "source": "default"}}
+
+
+wiz_src = (HERE / "setupwiz.html").read_text(encoding="utf-8")
+check("19a. в странице нет ложного «Не совпадает» (голос шага 5 больше не врёт)", "Не совпадает" not in wiz_src and "не совпадает" not in wiz_src)
+check("19b. поле токена не type=password (браузер не подставляет сохранённый пароль)", "{type: 'password', class: 'mask'" not in wiz_src
+      and "name: 'koresh-yandex-token'" in wiz_src)
+check("19c. кнопки и ссылки >= 44px, длинные значения переносятся (мобилка 390)",
+      re.search(r"\.btn\{[^}]*min-height:44px", wiz_src) and not re.search(r"\.btn\.sm\{[^}]*min-height", wiz_src)
+      and "overflow-wrap:anywhere" in wiz_src and re.search(r"\.val\{[^}]*flex-wrap:wrap", wiz_src))
+if not shutil.which("node"):
+    print("SKIP  19d-19o. node не найден: проверки отрисовки страницы пропущены (в CI node есть)")
+else:
+    scen = [("stepIot", _S(cid="")), ("stepIot", _S(cid="0123456789abcdef0123456789abcdef")),
+            ("stepAlice", _S("male")), ("stepAlice", _S("female")), ("stepAlice", _S("male", "Bro")),
+            ("stepAlice", _S("male", "Бро")), ("stepAlice", _S("female", "Кореш Дома")), ("stepCheck", _S("male", "Бро"))]
+    _jsf = Path(tempfile.mkdtemp()) / "dom.js"
+    _jsf.write_text(DOM_JS, encoding="utf-8")
+    proc = subprocess.run(["node", str(_jsf), str(HERE / "setupwiz.html"), json.dumps([{"fn": f, "S": s} for f, s in scen], ensure_ascii=False)],
+                          capture_output=True, text=True, timeout=60)
+    ok_run = proc.returncode == 0 and proc.stdout.strip().startswith("[")
+    check("19d. страница отрисовывается в node (шаги 2, 5, 6)", ok_run, (proc.stderr or proc.stdout)[:300])
+    if ok_run:
+        R = json.loads(proc.stdout.strip().splitlines()[-1])
+        own, shared, al_m, al_f, al_lat, al_ru, al_multi, chk6 = R
+        # ссылки
+        def anchors(r):
+            return [n for n in _nodes(r["tree"], "a")]
+        allA = [a for r in R for a in anchors(r)]
+        check("19e. ВСЕ ссылки на странице открываются в новой вкладке и с noopener", allA and all(
+            a["a"].get("target") == "_blank" and "noopener" in a["a"].get("rel", "") for a in allA), str([a["a"] for a in allA][:3]))
+        hrefs_own = {a["a"]["href"] for a in anchors(own)}
+        check("19f. шаг 2 (своё приложение): oauth.yandex.ru/client/new - кнопка-ссылка", "https://oauth.yandex.ru/client/new" in hrefs_own)
+        hrefs_al = {a["a"]["href"] for a in anchors(al_m)}
+        check("19g. шаг 5: dialogs.yandex.ru/developer - кнопка-ссылка", "https://dialogs.yandex.ru/developer" in hrefs_al)
+        loose = []
+        for r in (own, shared, al_m):
+            def f(n):
+                if isinstance(n, dict) and n["t"] in ("span", "b") and re.search(r"oauth\.yandex\.ru/client/new|dialogs\.yandex\.ru/developer", _text(n)):
+                    loose.append(_text(n))
+            _walk(r["tree"], f)
+        check("19h. адреса не остались голым текстом (нет mono-спанов с этими адресами без ссылки)", not loose, str(loose))
+        sh_href = {a["a"]["href"] for a in anchors(shared)}
+        check("19i. общее приложение: кнопка «Войти через Яндекс» ведёт на authorize с ClientID",
+              any(h.startswith("https://oauth.yandex.ru/authorize?response_type=token&client_id=01234567") for h in sh_href))
+        # «скопировать»
+        check("19j. шаг 2: скопировать можно название «Кореш», Redirect URI, iot:view и iot:control (кнопки нажаты, буфер получил значения)",
+              {"Кореш", "https://oauth.yandex.ru/verification_code", "iot:view", "iot:control"} <= set(own["copied"]), str(own["copied"]))
+        check("19k. шаг 5: скопировать можно название «Кореш» и активационное имя «кореш дома»",
+              {"Кореш", "кореш дома"} <= set(al_m["copied"]), str(al_m["copied"]))
+        # интерфейс Яндекса
+        ot = _text(own["tree"])
+        check("19l. шаг 2: «Дополнительные → Название доступа → iot:view, iot:control», «в Основных ничего не отмечать», Госуслуги",
+              all(x in ot for x in ("Дополнительные", "Название доступа", "iot:view", "iot:control", "Основные", "Госуслуг")))
+        check("19m. предупреждение про Госуслуги есть и у общего приложения", "Госуслуг" in _text(shared["tree"]))
+        # токен
+        tok = [n for n in _nodes(own["tree"], "input")]
+        # поле токена живёт в stepIot: ищем по placeholder
+        tk = [n for n in tok if "y0_" in n["a"].get("placeholder", "")]
+        check("19n. поле токена: не password, autocomplete=off, подсказка про y0_, пусто при показе",
+              len(tk) == 1 and tk[0]["a"].get("type") != "password" and tk[0]["a"].get("autocomplete") == "off" and tk[0]["v"] == "", str(tk))
+        # голос шага 5
+        tm, tf = _text(al_m["tree"]), _text(al_f["tree"])
+        check("19o. шаг 5: male = мужской нейроголос, female = голос Алисы; ложного «Не совпадает» нет ни там, ни там",
+              "Не совпадает" not in tm + tf and "нейроголос" in tm and "голос Алисы" in tf and "(сейчас там мужской)" in tm and "(сейчас там женский)" in tf)
+        # названия
+        def names(r):
+            t = _text(r["tree"])
+            return t
+        check("19p. название навыка по-русски «Кореш», активация двумя словами «кореш дома» (ASSISTANT_NAME по умолчанию)",
+              "Название навыка (по-русски, не латиницей): Кореш" in names(al_m) and "кореш дома" in al_m["copied"])
+        check("19q. имя «Бро» -> «бро дома»; латиница «Bro» -> «Кореш» / «кореш дома»; «Кореш Дома» остаётся двумя словами",
+              "бро дома" in al_ru["copied"] and "Бро" in al_ru["copied"]
+              and "кореш дома" in al_lat["copied"] and "Кореш" in al_lat["copied"] and "Bro" not in al_lat["copied"]
+              and "кореш дома" in al_multi["copied"] and "кореш дома дома" not in al_multi["copied"], str((al_ru["copied"], al_lat["copied"], al_multi["copied"])))
+        check("19r. [ПРОВЕРИТЬ правила Яндекса] у активационного имени", "ПРОВЕРИТЬ правила Яндекса" in names(al_m))
+        check("19s. шаг 6 подсказывает активационное имя, а не просто имя", "запусти навык бро дома" in _text(chk6["tree"]), _text(chk6["tree"])[:200])
+
 
 # ================= 14. Dockerfile копирует каждый модуль (новый файл не должен выпасть из образа) =================
 _copy = next(l for l in (HERE / "Dockerfile").read_text(encoding="utf-8").splitlines() if l.startswith("COPY ") and ".py" in l)

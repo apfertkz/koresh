@@ -69,6 +69,11 @@ input[type=radio],input[type=checkbox]{width:20px;height:20px;accent-color:var(-
 @keyframes p{0%{opacity:1}50%{opacity:.2}100%{opacity:1}}
 .big{font-size:22px}
 .hidden{display:none}
+.btn.sm{padding:4px 12px;box-shadow:2px 2px 0 var(--ink);margin:0;font-size:14px}
+.val{display:inline-flex;flex-wrap:wrap;gap:8px;align-items:center;margin:4px 8px 4px 0;max-width:100%}
+.val .mono{background:var(--paper);border:2px dashed var(--ink);padding:6px 10px;font-weight:700;max-width:100%}
+.mask{-webkit-text-security:disc;text-security:disc}
+.pv{display:block;margin:8px 0}
 @media (max-width:620px){.row{grid-template-columns:1fr 44px}.row input:nth-child(2){grid-column:1/2}}
 </style>
 </head>
@@ -148,6 +153,30 @@ async function copyText(text) {
 }
 function selectNode(el) {
   try { const r = document.createRange(); r.selectNodeContents(el); const s = window.getSelection(); s.removeAllRanges(); s.addRange(r); } catch (e) { /* не страшно */ }
+}
+
+/* внешняя ссылка: всегда в новой вкладке, без передачи opener */
+function ext(url, label, cls) {
+  return h('a', {class: 'btn ' + (cls || 'yel'), href: url, target: '_blank', rel: 'noopener noreferrer'}, label);
+}
+/* значение для вставки в чужую форму + кнопка «скопировать» (с подтверждением рядом) */
+function val(value, label) {
+  const sp = h('span', {class: 'mono'}, value);
+  const msg = h('span', {class: 'small', role: 'status'});
+  const b = btn(label || 'Скопировать', async () => {
+    const ok = await copyText(value);
+    if (!ok) selectNode(sp);
+    msg.textContent = ok ? 'Скопировано' : 'Само не скопировалось: значение выделено, скопируй вручную.';
+  }, 'alt sm');
+  return h('span', {class: 'val'}, sp, b, msg);
+}
+/* Названия навыка: по-русски, активационное имя из двух слов (по умолчанию «<имя> дома») */
+function skillNames() {
+  const nm = (S && S.name && S.name.value || 'Кореш').trim();
+  const latin = /[A-Za-z]/.test(nm);
+  const title = latin ? 'Кореш' : nm;
+  const low = title.toLowerCase();
+  return {title, activation: /\s/.test(low) ? low : low + ' дома', latin};
 }
 
 /* ---------- вход / закрыто ---------- */
@@ -243,29 +272,37 @@ function deviceList(d) {
 function stepIot() {
   const out = h('div');
   const list = h('div');
-  const tok = h('input', {type: 'password', autocomplete: 'off', placeholder: 'Вставь токен сюда', 'aria-label': 'Токен умного дома'});
+  // не type=password: браузер подсовывает туда сохранённый пароль. Значение прячем стилем, автозаполнение гасим.
+  const tok = h('input', {type: 'text', class: 'mask', name: 'koresh-yandex-token', autocomplete: 'off', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false',
+    'data-lpignore': 'true', 'data-1p-ignore': 'true', 'data-form-type': 'other', placeholder: 'Вставь токен от Яндекса (начинается с y0_)', 'aria-label': 'Токен умного дома'});
+  tok.value = '';
   const cid = h('input', {type: 'text', autocomplete: 'off', placeholder: 'ClientID своего приложения', 'aria-label': 'ClientID'});
   const link = (id) => 'https://oauth.yandex.ru/authorize?response_type=token&client_id=' + encodeURIComponent(id);
   const myLink = h('div');
   cid.addEventListener('input', () => {
     const v = cid.value.trim();
-    myLink.replaceChildren(/^[A-Za-z0-9]{10,64}$/.test(v) ? h('a', {class: 'btn yel', href: link(v), target: '_blank', rel: 'noopener noreferrer'}, 'Войти через Яндекс') : null);
+    myLink.replaceChildren(/^[A-Za-z0-9]{10,64}$/.test(v) ? ext(link(v), 'Войти через Яндекс') : null);
   });
+  const gos = note('warn', 'Если Яндекс просит верификацию приложения через Госуслуги, пропусти: для себя всё работает и без неё. ', chk());
 
   const main = S.yandex_client_id
     ? h('div', 0,
         h('ol', {class: 'steps'},
           h('li', 0, 'Нажми кнопку. Откроется Яндекс (вход под аккаунтом, к которому привязана Станция и умные устройства).', h('br'),
-            h('a', {class: 'btn yel', href: link(S.yandex_client_id), target: '_blank', rel: 'noopener noreferrer', style: 'margin-top:8px'}, 'Войти через Яндекс')),
+            ext(link(S.yandex_client_id), 'Войти через Яндекс')),
           h('li', 0, 'Нажми «Разрешить». Яндекс покажет страницу с длинным токеном.'),
-          h('li', 0, 'Скопируй токен целиком и вставь его в поле ниже. Яндекс его потом не покажет.')))
+          h('li', 0, 'Скопируй токен целиком и вставь его в поле ниже. Яндекс его потом не покажет.')),
+        gos)
     : h('div', 0,
         note('warn', 'Общее приложение «Кореш» не подключено (нет YANDEX_OAUTH_CLIENT_ID). Идём запасным путём: клиент создаёт своё приложение в Яндексе.'),
         h('ol', {class: 'steps'},
-          h('li', 0, 'Открой ', h('span', {class: 'mono'}, 'oauth.yandex.ru/client/new'), ' под Яндекс ID клиента.', ' ', chk()),
-          h('li', 0, 'Название «koresh», платформа «Веб-сервисы», Redirect URI: ', h('span', {class: 'mono'}, 'https://oauth.yandex.ru/verification_code')),
-          h('li', 0, 'Доступы: «Умный дом», оба: ', h('span', {class: 'mono'}, 'iot:view'), ' и ', h('span', {class: 'mono'}, 'iot:control'), '. Сохрани и скопируй ClientID.'),
-          h('li', 0, 'Вставь ClientID ниже, нажми появившуюся кнопку, на странице Яндекса «Разрешить», скопируй токен.', h('br'), cid, myLink)));
+          h('li', 0, 'Открой страницу создания приложения под Яндекс ID клиента.', h('br'),
+            ext('https://oauth.yandex.ru/client/new', 'Открыть oauth.yandex.ru'), ' ', chk()),
+          h('li', 0, 'Название: ', val('Кореш'), h('br'), 'Платформа «Веб-сервисы». Redirect URI: ', val('https://oauth.yandex.ru/verification_code')),
+          h('li', 0, 'Права доступа: раздел «Дополнительные» → «Название доступа», отметь оба: ', val('iot:view'), val('iot:control'),
+            h('br'), 'В разделе «Основные» ничего не отмечай. Сохрани и скопируй ClientID.', ' ', chk()),
+          h('li', 0, 'Вставь ClientID ниже, нажми появившуюся кнопку, на странице Яндекса «Разрешить», скопируй токен.', h('br'), cid, myLink)),
+        gos);
 
   const check = btn('Проверить и сохранить', async () => {
     out.replaceChildren(note('info', 'Спрашиваю у Яндекса…'));
@@ -293,7 +330,7 @@ function stepIot() {
     S.iot.set ? note('ok', 'Токен уже есть ', srcTag(S.iot.source), ' Можно показать устройства или вставить новый токен.') : null,
     S.iot.set ? h('div', 0, show, list) : null,
     main,
-    h('label', 0, 'Токен'), tok, check, out);
+    h('label', 0, 'Токен'), tok, h('p', {class: 'small'}, 'Вставь токен от Яндекса: он начинается с y0_. Браузер сохранённые пароли сюда подставлять не должен; если подставил, сотри поле.'), check, out);
 }
 
 /* ---------- 3. характер ---------- */
@@ -425,7 +462,8 @@ function stepHome() {
 function stepAlice() {
   const w = S.webhook;
   const out = h('div');
-  const nm = S.name.value, male = S.gender.value === 'male';
+  const male = S.gender.value === 'male';
+  const sk = skillNames();
   return h('div', 0,
     h('h2', 0, 'Шаг 5. Навык в Алисе'),
     h('p', 0, 'Алиса станет для Кореша ушами и ртом. Для этого в Яндекс Диалогах создаётся приватный навык, который ходит на этот адрес.'),
@@ -436,14 +474,18 @@ function stepAlice() {
           h('p', {class: 'small'}, 'Адрес секретный: в нём ключ доступа. Не слать в чат и не показывать в записи экрана.'))
       : note('bad', 'WEBHOOK_SECRET не задан, вебхук закрыт для всех. Секрет создаёт шаблон Railway; без него навык работать не будет.'),
     h('ol', {class: 'steps'},
-      h('li', 0, 'Открой ', h('span', {class: 'mono'}, 'dialogs.yandex.ru/developer'), ' под Яндекс ID клиента, том же, что у Станции.', h('br'),
+      h('li', 0, 'Открой Консоль Диалогов под Яндекс ID клиента, том же, что у Станции.', h('br'),
+        ext('https://dialogs.yandex.ru/developer', 'Открыть dialogs.yandex.ru'), h('br'),
         h('span', {class: 'mock btnm'}, 'Создать диалог'), ' → ', h('span', {class: 'mock btnm'}, 'Навык в Алисе'), ' ', chk()),
-      h('li', 0, 'Название и фраза активации: ', h('b', 0, nm), '.', h('br'),
-        h('span', {class: 'mock'}, 'Название: ' + nm), ' ', h('span', {class: 'mock'}, 'Активационное имя: ' + nm.toLowerCase()), ' ', chk()),
+      h('li', 0, 'Название навыка (по-русски, не латиницей): ', val(sk.title),
+        h('br'), 'Активационное имя, два слова: ', val(sk.activation), ' ', chk(),
+        h('div', {class: 'small'}, 'Два слова, чтобы имя не путалось с самой Алисой и с другими навыками. [ПРОВЕРИТЬ правила Яндекса для активационного имени: допустимая длина и слова.]'),
+        sk.latin ? h('div', {class: 'small'}, 'Имя ассистента написано латиницей, а Яндекс принимает название и активационное имя по-русски, поэтому подставлено «Кореш».') : null),
       h('li', 0, 'Backend: Webhook URL. Вставь адрес из жёлтого блока выше.', h('br'), h('span', {class: 'mock'}, 'Webhook URL: https://…/alice/••••••••'), ' ', chk()),
       h('li', 0, 'Доступ: ', h('b', 0, 'Приватный'), '. Поверхности: колонки и приложение. Сохрани.', h('br'),
         h('span', {class: 'mock'}, '(•) Приватный'), ' ', chk()),
-      h('li', 0, 'Голос навыка: ', h('b', 0, male ? 'мужской (нейроголос, например «Филипп»)' : 'голос Алисы (женский)'), '. Пол ассистента на шаге 3 сейчас: ', h('b', 0, male ? 'мужской' : 'женский'), '. Не совпадает: вернись на шаг 3.', ' ',
+      h('li', 0, 'Голос навыка в консоли: ', h('b', 0, male ? 'мужской (нейроголос, например «Филипп»)' : 'голос Алисы (женский)'),
+        '. Это под пол ассистента с шага 3 (сейчас там ', h('b', 0, male ? 'мужской' : 'женский'), '). Если в консоли выберешь другой голос, вернись на шаг 3 и поставь тот же пол, иначе род в речи разойдётся с голосом.', ' ',
         chk(), h('div', {class: 'small'}, 'Не подтверждено докой: как называется пункт выбора голоса и какие голоса доступны навыку на Станции.')),
       h('li', 0, 'Вкладка «Тестирование»: напиши «привет». Должен прийти ответ. Потом иди на шаг 6, там страница сама услышит Яндекс.', ' ', chk()),
       h('li', 0, 'Для публикации Яндекс просит примеры фраз, имя разработчика, категорию, описание, иконку 224x224. Для личного пользования хватает приватного черновика.', ' ', chk())),
@@ -468,7 +510,7 @@ function stepCheck() {
   api('heard?since=1e12').then(r => { if (r.ok) { since = r.now; pollTimer = setInterval(tick, 2000); } });
   return h('div', 0,
     h('h2', 0, 'Шаг 6. Проверка'),
-    h('p', 0, 'Скажи колонке: «Алиса, запусти навык ', h('b', 0, S.name.value), '», потом «привет». Либо напиши «привет» во вкладке «Тестирование» в консоли Диалогов. Страница сама поймает запрос.'),
+    h('p', 0, 'Скажи колонке: «Алиса, запусти навык ', h('b', 0, skillNames().activation), '», потом «привет». Либо напиши «привет» во вкладке «Тестирование» в консоли Диалогов. Страница сама поймает запрос.'),
     status,
     h('h3', 0, 'Без Станции'),
     h('p', 0, 'Кнопка шлёт тестовую реплику на этот же вебхук. Так видно, что мозг и связка работают, даже пока навык ещё не создан. Это один обычный вызов мозга (доли цента).'),
