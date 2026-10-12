@@ -16,8 +16,8 @@ VERSION = os.environ.get("APP_VERSION", "dev")
 
 # Что можно задать через /setup и хранить в config.json. Ключ Anthropic и секрет вебхука сюда НЕ входят: только переменные.
 STORED_KEYS = ("YANDEX_IOT_TOKEN", "ASSISTANT_NAME", "TONE", "GENDER", "HOUSEHOLD", "BLOCKED_NAMES",
-               "LOCK_PHRASE", "ALLOW_LOCKS")
-SECRET_KEYS = ("YANDEX_IOT_TOKEN", "LOCK_PHRASE")          # значения этих ключей не показываем и не логируем
+               "LOCK_PHRASE", "ALLOW_LOCKS", "WA_CONTACTS", "WA_HIDDEN", "WA_NICKS")
+SECRET_KEYS = ("YANDEX_IOT_TOKEN", "LOCK_PHRASE", "WA_CONTACTS", "WA_HIDDEN", "WA_NICKS")          # значения этих ключей не показываем и не логируем
 _CFG = {"sig": None, "data": None}                        # кэш файла по отпечатку (inode, mtime, размер)
 _MEM_ONLY: dict = {}                                       # копия, если диск недоступен: живёт до перезапуска
 # Слой «пакет активации» (см. activation.py): персональные настройки из сервера лицензий. Живёт ТОЛЬКО в оперативке,
@@ -255,6 +255,56 @@ def allow_locks() -> bool:
 
 def lock_phrase() -> str:
     return env("LOCK_PHRASE")
+
+
+def wa_enabled() -> bool:
+    """WA_ENABLED=0 (или off/false/нет) -- аварийный выключатель WhatsApp: демон не стартует, инструментов у модели нет."""
+    return env("WA_ENABLED", "1").lower() not in ("0", "false", "no", "off", "нет")
+
+
+def wa_contacts() -> dict:
+    """WA_CONTACTS -- JSON {имя: номер}: кому Кореш может писать в WhatsApp (вписывает клиентка на /setup).
+    Номера живут только здесь и в запросе к WhatsApp, в запросы к модели не уходят никогда."""
+    raw = env("WA_CONTACTS")
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        print("WA_CONTACTS: невалидный JSON, игнорирую", flush=True)
+        return {}
+    return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+
+
+def _json_env(name: str, kind):
+    raw = env(name)
+    if not raw:
+        return kind()
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        print(f"{name}: невалидный JSON, игнорирую", flush=True)
+        return kind()
+    return data if isinstance(data, kind) else kind()
+
+
+def wa_hidden() -> set:
+    """WA_HIDDEN -- JSON-список номеров (цифры) из синхронизации WhatsApp, которых клиентка скрыла: Кореш о них не знает."""
+    return {str(x) for x in _json_env("WA_HIDDEN", list)}
+
+
+def wa_nicks() -> dict:
+    """WA_NICKS -- JSON {номер цифрами: [прозвища]} («жена» -> Оля): по прозвищу контакт находит сервер."""
+    out = {}
+    for k, v in _json_env("WA_NICKS", dict).items():
+        if isinstance(v, list):
+            out[str(k)] = [str(x) for x in v]
+    return out
+
+
+def wa_dir() -> str:
+    """Каталог WhatsApp на Volume: сессия (auth/), признак привязки, лимиты, согласие. Права 0700."""
+    return os.path.join(memory_dir(), "wa")
 
 
 def extra_blocked_names(with_pack: bool = True) -> list[str]:

@@ -40,6 +40,7 @@ _RAM_ID = {"id": ""}           # install_id, если диск недоступ�
 
 MSG_OFF = "Сервер активации сейчас не подключён к этому образу. Установку можно продолжить без кода: Кореш заработает обычным."
 MSG_NO_DOMAIN = "Не удалось определить адрес сервера. Открой страницу настройки по адресу твоего Кореша в интернете (не localhost)."
+MSG_NET_LOGIN = "Сервер активации не ответил. Попробуй ещё раз через минуту."
 MSG_NET = "Сервер активации не ответил. Попробуй ещё раз через минуту; установку можно продолжить и без кода."
 
 
@@ -254,6 +255,30 @@ def _err(r) -> dict:
     except ValueError:
         j = {}
     return {"ok": False, "error": str(j.get("error") or "server")[:40], "message": str(j.get("message") or MSG_NET)[:300]}
+
+
+async def check_code(code: str) -> dict:
+    """Вход на /setup кодом KR-…: спрашиваем сервер лицензий, годится ли код ЭТОЙ установке (не отозван и либо ещё не активирован,
+    либо активирован именно ею). Ничего не привязывает и не сохраняет. Отказ одинаковый на все причины: {"ok": False, "error": "bad_code"}.
+    Сеть упала / сервер не ответил -> error "net" (это не неверная попытка ввода)."""
+    if not configured():
+        return {"ok": False, "error": "bad_code"}
+    try:
+        r = await _post("/v1/code/check", {"code": str(code or "")[:40], "install_id": install_id()}, timeout=8.0)
+    except Exception as e:  # noqa: BLE001
+        print(f"activation: проверка кода: сеть {type(e).__name__}", flush=True)
+        return {"ok": False, "error": "net", "message": MSG_NET_LOGIN}
+    if r.status_code == 200:
+        try:
+            if r.json().get("ok") is True:
+                return {"ok": True}
+        except ValueError:
+            pass
+        return {"ok": False, "error": "net", "message": MSG_NET_LOGIN}
+    if r.status_code in (400, 404):
+        return {"ok": False, "error": "bad_code"}
+    print(f"activation: проверка кода: сервер ответил {r.status_code}", flush=True)
+    return {"ok": False, "error": "net", "message": MSG_NET_LOGIN}
 
 
 async def start_flow(code: str, domain: str = "") -> dict:

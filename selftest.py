@@ -1878,20 +1878,26 @@ class Element {
 }
 const reg = {};
 const COPIED = [];
+const TIMERS = [];
+const FETCHLOG = [];
+let CUR = null;
 const ctx = {
   Element, console, Promise, JSON, Object, Array, String, Number, RegExp, encodeURIComponent, Math, Date, setTimeout,
   document: {createElement: t => new Element(t), createTextNode: t => new Txt(t), getElementById: id => (reg[id] = reg[id] || new Element('div')),
              body: new Element('body'), execCommand: () => false},
   window: {scrollTo() {}, getSelection: () => ({removeAllRanges() {}, addRange() {}})},
   navigator: {clipboard: {writeText: t => { COPIED.push(t); return Promise.resolve(); }}},
-  fetch: async () => ({status: 200, ok: true, json: async () => ({authed: false})}),
-  confirm: () => true, setInterval: () => 1, clearInterval() {},
+  fetch: async (url, opt) => { const f = (CUR && CUR.fetch) || {}; const key = String(url).replace('/setup/api/', '').split('?')[0];
+                          FETCHLOG.push({k: key, body: opt && opt.body ? JSON.parse(opt.body) : null});
+                          const r = key in f ? f[key] : {authed: false}; const bad = r.__status || 200;
+                          return {status: bad, ok: bad < 400, json: async () => r}; },
+  confirm: () => true, setInterval: (fn) => { TIMERS.push(fn); return TIMERS.length; }, clearInterval: (id) => { TIMERS[id - 1] = null; },
   Range: class {}, 
 };
 ctx.document.createRange = () => ({selectNodeContents() {}});
 ctx.globalThis = ctx;
 vm.createContext(ctx);
-vm.runInContext(js + "\n;globalThis.__T = {setS(v) { S = v; }, stepIot, stepAlice, stepCheck};", ctx);
+vm.runInContext(js + "\n;globalThis.__T = {setS(v) { S = v; }, stepIot, stepAlice, stepCheck, renderLogin, stepWa, renderWaOnly};", ctx);
 function ser(n) { return n.nodeType === 3 ? n.text : {t: n.tag, a: n.attrs, v: n.value, c: n.children.map(ser)}; }
 function walk(n, f) { f(n); if (n.nodeType === 1) n.children.forEach(c => walk(c, f)); }
 (async () => {
@@ -1899,11 +1905,28 @@ function walk(n, f) { f(n); if (n.nodeType === 1) n.children.forEach(c => walk(c
   for (const sc of scen) {
     ctx.__T.setS(sc.S);
     COPIED.length = 0;
-    const tree = ctx.__T[sc.fn]();
+    TIMERS.length = 0;
+    FETCHLOG.length = 0;
+    CUR = sc;
+    let tree = ctx.__T[sc.fn](...(sc.args || []));
+    if (!tree) tree = reg['app'];
+    const tick0 = () => new Promise(r => setTimeout(r, 0));
+    const textOf = n => n.nodeType === 3 ? n.text : n.children.map(textOf).join('');
+    await tick0();
+    for (const st of (sc.seq || [])) {
+      if (st.click) {
+        const found = [];
+        walk(st.root === 'app' ? reg['app'] : tree, n => { if (n.nodeType === 1 && n.tag === 'button' && textOf(n) === st.click) found.push(n); });
+        for (const b of found) for (const fn of (b.handlers.click || [])) await fn();
+      }
+      if (st.checkAll) walk(tree, n => { if (n.nodeType === 1 && n.tag === 'input' && n.attrs.type === 'checkbox') n.checked = true; });
+      if (st.fire) for (let i = 0; i < st.fire; i++) { for (const t of TIMERS.slice()) if (t) await t(); await tick0(); }
+      await tick0();
+    }
     const clicks = [];
     walk(tree, n => { if (n.nodeType === 1 && n.tag === 'button' && (n.attrs['class'] || '').includes('sm')) clicks.push(n); });
     for (const b of clicks) for (const fn of (b.handlers.click || [])) await fn();
-    out.push({tree: ser(tree), copied: COPIED.slice()});
+    out.push({tree: ser(tree), copied: COPIED.slice(), app: ser(reg['app']), calls: FETCHLOG.slice()});
   }
   console.log(JSON.stringify(out));
 })();
@@ -2083,6 +2106,12 @@ class FakeLicense:
                                 "secret": body["exchange_secret"], "domain": body["server_domain"]}
             prefix = self.login_prefix or "https://license.example.test"
             return httpx.Response(200, json={"ok": True, "handle": hd, "expires_in": 600, "login_url": prefix + "/yandex/start?handle=" + hd})
+        if path == "/v1/code/check":
+            # как настоящий: ок, если код есть и либо ещё не активирован, либо активирован именно этой установкой; иначе ОДИН отказ на всё
+            ok = body.get("code") == GOOD_CODE and not self.revoked and (self.bound is None or body.get("install_id") in self.installs)
+            if ok:
+                return httpx.Response(200, json={"ok": True})
+            return httpx.Response(404, json={"ok": False, "error": "bad_code", "message": "Код не подошёл. Проверьте, что вы ввели его без ошибок."})
         if path == "/v1/install/exchange":
             h = self.handles.get(body.get("handle"))
             if not h:
@@ -2362,18 +2391,257 @@ main.STATE.pop("act-u1", None)
 main.STATE.pop("act-u2", None)
 
 
+# ================= 21. ТЗ-28: один код вместо двух, мелочи /setup (сервер лицензий замокан) =================
+_ENV21 = ("SETUP_CODE", "MEMORY_DIR", "WEBHOOK_SECRET", "ANTHROPIC_API_KEY", "YANDEX_IOT_TOKEN", "YANDEX_OAUTH_CLIENT_ID", "ASSISTANT_NAME",
+          "TONE", "GENDER", "HOUSEHOLD", "BLOCKED_NAMES", "USAGE_FILE")
+_SAVED21 = {k: os.environ.get(k) for k in _ENV21}
+_DIR21 = tempfile.mkdtemp()
+os.environ["MEMORY_DIR"] = _DIR21
+os.environ["USAGE_FILE"] = os.path.join(_DIR21, "usage.json")
+for _k in ("YANDEX_IOT_TOKEN", "YANDEX_OAUTH_CLIENT_ID", "ASSISTANT_NAME", "TONE", "GENDER", "HOUSEHOLD", "BLOCKED_NAMES"):
+    os.environ.pop(_k, None)
+SC21 = "t28-setup-code-777"
+os.environ["SETUP_CODE"] = SC21
+os.environ["WEBHOOK_SECRET"] = "t28-hook-secret"
+os.environ["ANTHROPIC_API_KEY"] = "sk-test-t28"
+activation.reset_for_tests()
+LIC21 = FakeLicense()
+activation.LICENSE_URL = "https://license.example.test"
+activation._TRANSPORT = httpx.MockTransport(LIC21)
+setupwiz._TRANSPORT = httpx.MockTransport(yandex_handler)
+setupwiz.reset_for_tests()
+
+
+def lg21(c, code, reopen=False):
+    return c.post("/setup/api/login", json={"code": code, "reopen": reopen})
+
+
+def checks21():
+    return [(b, h) for p, b, h in LIC21.requests if p == "/v1/code/check"]
+
+
+# --- 21a. старый путь жив и сервер лицензий не трогает ---
+c_a = _TC(main.app)
+r = lg21(c_a, SC21)
+check("21a. SETUP_CODE по-прежнему пускает (запасной для нас), сервер лицензий при этом не дёргается",
+      r.status_code == 200 and not LIC21.requests and c_a.get("/setup/api/state").json()["login_code"] == "")
+
+# --- 21b. вход кодом KR-… ---
+setupwiz.reset_for_tests()
+c_b = _TC(main.app)
+r = lg21(c_b, GOOD_CODE)
+sc_b = r.headers.get("set-cookie", "").lower()
+check("21b. код KR-… пускает: сессия, httpOnly, SameSite=Strict, 2 часа", r.status_code == 200 and "httponly" in sc_b and "samesite=strict" in sc_b and "max-age=7200" in sc_b, r.text[:200])
+ck = checks21()
+check("21c. образ спросил сервер лицензий: ровно один /v1/code/check с кодом и install_id этой установки, ничего лишнего",
+      len(ck) == 1 and set(ck[0][0]) == {"code", "install_id"} and ck[0][0]["code"] == GOOD_CODE and ck[0][0]["install_id"] == activation.install_id(), str(ck))
+st_b = c_b.get("/setup/api/state").json()
+check("21d. после входа KR-кодом state знает этот код (блок «Код активации» заполнится им); у входа по SETUP_CODE пусто",
+      st_b["login_code"] == GOOD_CODE and st_b["license"]["configured"] is True)
+check("21e. код не уходит никуда лишнему: ни в /health, ни в журнал входа",
+      GOOD_CODE not in c_b.get("/health").text and SC21 not in json.dumps(LIC21.requests, default=str))
+
+# --- 21f. регистр, пробелы, дефисы ---
+setupwiz.reset_for_tests()
+LIC21.requests.clear()
+c_f = _TC(main.app)
+r = lg21(c_f, "  kr abcd efgh jkmn ")
+check("21f. «kr abcd efgh jkmn» с пробелами принимается; серверу лицензий уходит каноническая форма",
+      r.status_code == 200 and checks21()[-1][0]["code"] == GOOD_CODE, r.text[:200])
+
+# --- 21g. чужой / битый KR -> отказ без утечек ---
+setupwiz.reset_for_tests()
+LIC21.requests.clear()
+c_g = _TC(main.app)
+r_missing = lg21(c_g, "KR-ZZZZ-ZZZZ-ZZZZ")
+LIC21.bound, LIC21.installs = YID_A, ["ki-someone-else-installation-id"]
+r_foreign = lg21(c_g, GOOD_CODE)
+LIC21.bound, LIC21.installs = None, []
+r_garbage = lg21(c_g, "KR-12")
+check("21g. несуществующий, чужой (активирован другой установкой) и битый KR -> один и тот же отказ 401 без куки",
+      r_missing.status_code == r_foreign.status_code == r_garbage.status_code == 401
+      and r_missing.json()["error"] == r_foreign.json()["error"] == r_garbage.json()["error"] == "bad_code"
+      and r_missing.json()["message"] == r_foreign.json()["message"] == r_garbage.json()["message"]
+      and not c_g.cookies.get("koresh_setup"), f"{r_missing.text} | {r_foreign.text} | {r_garbage.text}")
+check("21h. код, активированный ЭТОЙ установкой, входит снова (после переустановки страницы/перезапуска)",
+      (setattr(LIC21, "bound", YID_A), setattr(LIC21, "installs", [activation.install_id()]), lg21(_TC(main.app), GOOD_CODE).status_code)[2] == 200)
+LIC21.bound, LIC21.installs = None, []
+
+# --- 21i. счётчик неверных кодов общий, блок работает и для KR ---
+setupwiz.reset_for_tests()
+LIC21.requests.clear()
+c_i = _TC(main.app)
+codes = [lg21(c_i, f"KR-ZZZZ-ZZZZ-ZZZ{i}").status_code for i in range(5)]
+n_req = len(LIC21.requests)
+r_lock = lg21(c_i, GOOD_CODE)
+check("21i. неверный KR x5: 401 x4, на пятой блок 429; во время блока верный код не пускает и сервер лицензий не дёргается",
+      codes == [401, 401, 401, 401, 429] and r_lock.status_code == 429 and len(LIC21.requests) == n_req, str(codes))
+check("21j. пока блок, SETUP_CODE тоже не пускает (счётчик один на оба кода)", lg21(c_i, SC21).status_code == 429)
+
+# --- 21k. сервер лицензий лёг / не подключён ---
+setupwiz.reset_for_tests()
+LIC21.down = True
+c_k = _TC(main.app)
+r_down = lg21(c_k, GOOD_CODE)
+LIC21.down = False
+check("21k. сервер лицензий лежит: понятный ответ 502, это НЕ неверная попытка (счётчик не растёт), входа по SETUP_CODE хватает",
+      r_down.status_code == 502 and "не ответил" in r_down.json()["message"] and setupwiz._fails["n"] == 0 and lg21(c_k, SC21).status_code == 200, r_down.text[:200])
+setupwiz.reset_for_tests()
+activation.LICENSE_URL = ""
+r_off = lg21(_TC(main.app), GOOD_CODE)
+activation.LICENSE_URL = "https://license.example.test"
+check("21l. сервер лицензий не подключён к образу: KR-код просто не подходит, без сетевых вызовов", r_off.status_code == 401 and r_off.json()["error"] == "bad_code")
+setupwiz.reset_for_tests()
+LIC21.requests.clear()
+r_nokr = lg21(_TC(main.app), "hello-world")
+check("21m. не похоже на KR-код (и не SETUP_CODE): отказ, к серверу лицензий не ходим", r_nokr.status_code == 401 and not LIC21.requests)
+
+# --- 21n. сессия и закрытие ---
+setupwiz.reset_for_tests()
+c_n = _TC(main.app)
+lg21(c_n, GOOD_CODE)
+c_n.post("/setup/api/logout", json={})
+check("21n. выход гасит и сессию, и запомненный код", c_n.get("/setup/api/state").status_code == 401 and not setupwiz._session_codes)
+c_o = _TC(main.app)
+lg21(c_o, GOOD_CODE)
+C.set_setup_done(True)
+r_closed = lg21(_TC(main.app), GOOD_CODE)
+r_reopen = lg21(_TC(main.app), GOOD_CODE, reopen=True)
+check("21o. после «Готово» KR-код без «Перенастроить» не пускает (403 closed), с ним пускает", r_closed.status_code == 403 and r_closed.json()["error"] == "closed" and r_reopen.status_code == 200)
+C.set_setup_done(False)
+setupwiz.reset_for_tests()
+c_p = _TC(main.app)
+lg21(c_p, GOOD_CODE)
+T_BEFORE = setupwiz._now
+setupwiz._now = lambda: T_BEFORE() + 7300
+c_p.get("/setup/api/state")
+check("21p. сессия по KR-коду истекает за 2 часа вместе с запомненным кодом", c_p.get("/setup/api/state").status_code == 401 and not setupwiz._session_codes)
+setupwiz._now = T_BEFORE
+
+# --- 21q. «Привет» / запуск навыка: пустая реплика не превращается в «» ---
+setupwiz.reset_for_tests()
+c_q = _TC(main.app)
+lg21(c_q, SC21)
+since_q = c_q.get("/setup/api/heard?since=1e12").json()["now"]
+setupwiz._now = lambda: T_BEFORE() + 10
+wp21 = "/alice/" + os.environ["WEBHOOK_SECRET"]
+brain._create = stub("Привет от мока")
+c_q.post(wp21, json={"session": {"new": True, "user": {"user_id": "t28-launch"}}, "request": {"original_utterance": ""}, "version": "1.0"})
+h_q = c_q.get(f"/setup/api/heard?since={since_q}").json()
+check("21q. запуск навыка с пустой репликой: услышано, kind=launch, text пуст (страница покажет «Навык запущен»)", h_q["heard"] is True and h_q["kind"] == "launch" and h_q["text"] == "", str(h_q))
+setupwiz._now = lambda: T_BEFORE() + 20
+c_q.post(wp21, json={"session": {"new": False, "user": {"user_id": "t28-launch"}}, "request": {"original_utterance": "привет"}, "version": "1.0"})
+h_q2 = c_q.get(f"/setup/api/heard?since={since_q}").json()
+check("21r. потом настоящая реплика заменяет запуск: kind=phrase, text=привет", h_q2["kind"] == "phrase" and h_q2["text"] == "привет")
+setupwiz._now = T_BEFORE
+main.STATE.pop("t28-launch", None)
+
+# --- страница в node: вход, заполненный код, «Готово, жми Дальше», плашка, «Навык запущен», активационное имя ---
+wiz21 = (HERE / "setupwiz.html").read_text(encoding="utf-8")
+check("21s. на странице нет SETUP_CODE (клиент про него не слышит); вход описан как «код из бота»",
+      "SETUP_CODE" not in wiz21 and "код из бота" in wiz21.lower() and "Код установки" not in wiz21)
+DEV21 = {"count": 1, "devices": [{"name": "Лампа", "type": "свет", "room": "зал", "locked": False}], "scenarios": [], "rooms": ["зал"], "locked_count": 0, "locks_enabled": False}
+SL = {"configured": True, "active": False}
+TONES21 = ["derzkiy_mat", "derzkiy", "vezhlivyy"]
+S_LOGIN = {**_S(cid=""), "license": SL, "login_code": GOOD_CODE, "tones": TONES21}
+S_NOLOGIN = {**_S(cid=""), "license": SL, "login_code": ""}
+S_IOT = {**_S(cid=""), "license": SL, "login_code": "", "iot": {"set": True, "source": "setup"}}
+S_CID = {**_S(cid="0123456789abcdef0123456789abcdef"), "license": SL, "login_code": ""}
+SEQ_OK = [{"click": "Войти через Яндекс"}, {"fire": 1}]
+FETCH_OK = {"license/start": {"ok": True, "authorize_url": "https://license.example.test/yandex/start?handle=" + "a" * 64},
+            "license/status": {"status": "ok", "saved": True, "iot": True, "devices": DEV21, "persisted": True}}
+S_NAME = {**_S("male", "Бро"), "license": SL}
+scen21 = [
+    {"fn": "renderLogin", "S": S_NOLOGIN},                                                     # 0 вход
+    {"fn": "stepIot", "S": S_LOGIN},                                                           # 1 код заполнен
+    {"fn": "stepIot", "S": S_NOLOGIN},                                                         # 2 код пуст
+    {"fn": "stepIot", "S": S_LOGIN, "fetch": FETCH_OK, "seq": SEQ_OK + [{"click": "Дальше"}]},   # 3 успех + «Дальше»
+    {"fn": "stepIot", "S": S_NOLOGIN},                                                         # 4 плашка видна (нет токена, нет ClientID)
+    {"fn": "stepIot", "S": S_IOT},                                                             # 5 плашки нет (токен есть)
+    {"fn": "stepIot", "S": S_LOGIN, "fetch": FETCH_OK, "seq": SEQ_OK},                         # 6 плашка гаснет после успеха активации
+    {"fn": "stepIot", "S": S_CID},                                                             # 7 есть ClientID: плашки нет и так
+    {"fn": "stepCheck", "S": S_NAME, "fetch": {"heard": {"ok": True, "heard": True, "text": "", "kind": "launch", "now": 5}}, "seq": [{"fire": 1}]},   # 8
+    {"fn": "stepCheck", "S": S_NAME, "fetch": {"heard": {"ok": True, "heard": True, "text": "привет", "kind": "phrase", "now": 5}}, "seq": [{"fire": 1}]},  # 9
+    {"fn": "stepCheck", "S": S_NAME, "fetch": {"heard": {"ok": True, "heard": True, "text": "", "kind": "ping", "now": 5}}, "seq": [{"fire": 1}]},  # 10
+    {"fn": "stepAlice", "S": S_NAME},                                                           # 11
+]
+if not shutil.which("node"):
+    print("SKIP  21t-21z. node не найден: проверки страницы пропущены (в CI node есть)")
+else:
+    _j21 = Path(tempfile.mkdtemp()) / "dom.js"
+    _j21.write_text(DOM_JS, encoding="utf-8")
+    _p21 = subprocess.run(["node", str(_j21), str(HERE / "setupwiz.html"), json.dumps(scen21, ensure_ascii=False)], capture_output=True, text=True, timeout=60)
+    _ok21 = _p21.returncode == 0 and _p21.stdout.strip().startswith("[")
+    check("21t. страница с новыми блоками отрисовывается в node", _ok21, (_p21.stderr or _p21.stdout)[:300])
+    if _ok21:
+        R21 = json.loads(_p21.stdout.strip().splitlines()[-1])
+        login_t = _text(R21[0]["tree"])
+        login_in = [n for n in _nodes(R21[0]["tree"], "input")]
+        check("21u. экран входа: «код из бота», поле под KR-XXXX-XXXX-XXXX, про SETUP_CODE/«код установки» ни слова",
+              "из бота" in login_t and "SETUP_CODE" not in login_t and "установки" not in login_t
+              and len(login_in) == 1 and "KR-" in login_in[0]["a"].get("placeholder", ""), login_t[:200])
+
+        def code_input(r):
+            return [n for n in _nodes(r["tree"], "input") if n["a"].get("placeholder") == "KR-XXXX-XXXX-XXXX"]
+        ci1, ci2 = code_input(R21[1]), code_input(R21[2])
+        check("21v. после входа KR-кодом поле блока «Код активации» уже заполнено им; без KR-входа пусто",
+              len(ci1) == 1 and ci1[0]["v"] == GOOD_CODE and len(ci2) == 1 and ci2[0]["v"] == "")
+        t3, app3 = _text(R21[3]["tree"]), _text(R21[3]["app"])
+        check("21w. активация прошла: заметное «Готово, жми «Дальше»» + кнопка «Дальше» прямо там; нажатие ведёт на шаг 3",
+              "Готово, жми «Дальше»" in t3 and any(_text(b) == "Дальше" for b in _nodes(R21[3]["tree"], "button")) and "Шаг 3. Характер" in app3, t3[-300:] + " || " + app3[:200])
+        check("21x. в успехе по-прежнему: «Код принят», список устройств", "Код принят" in t3 and "Вижу 1 устройство" in t3)
+
+        def plaque(r):
+            return [n for n in _nodes(r["tree"], "div") if "note" in n["a"].get("class", "") and _text(n).startswith("Общее приложение")]
+        pl4, pl5, pl6, pl7 = plaque(R21[4]), plaque(R21[5]), plaque(R21[6]), plaque(R21[7])
+        check("21y. жёлтая плашка «Общее приложение не подключено…»: есть, пока умный дом не подключён; нет, если токен уже есть",
+              len(pl4) == 1 and "hidden" not in pl4[0]["a"].get("class", "") and not [p for p in pl5 if "hidden" not in p["a"].get("class", "")] and not pl7)
+        check("21z. плашка гаснет сама, как только активация по коду подключила умный дом",
+              len(pl6) == 1 and "hidden" in pl6[0]["a"].get("class", ""), str([p["a"] for p in pl6]))
+        t8, t9, t10 = _text(R21[8]["tree"]), _text(R21[9]["tree"]), _text(R21[10]["tree"])
+        check("21za. запуск навыка (пустая реплика): «Навык запущен — скажи «привет»», а не «Кореш тебя услышал: «»»",
+              "Навык запущен — скажи «привет»" in t8 and "«»" not in t8 and "услышал" not in t8, t8[-200:])
+        check("21zb. настоящая реплика показывается как раньше; ping тоже", "Кореш тебя услышал: «привет»" in t9 and "Яндекс достучался" in t10)
+        check("21zc. шаг «Проверка»: «ровно то активационное имя, которое ты вписала в Диалогах (мы предлагали «бро дома»)»; пример команды сохранён",
+              "ровно то активационное имя, которое ты вписала в Диалогах" in t8 and "(мы предлагали «бро дома»)" in t8 and "запусти навык бро дома" in t8, t8[:300])
+        t11 = _text(R21[11]["tree"])
+        check("21zd. шаг «Алиса»: активационное имя названо так же, как в боте («активационное имя», две слова), копируется кнопкой",
+              "Активационное имя, два слова" in t11 and "бро дома" in R21[11]["copied"])
+check("21ze. SETUP.md и README описывают вход кодом из бота (и что SETUP_CODE запасной)",
+      "код из бота" in (HERE / "SETUP.md").read_text(encoding="utf-8").lower() and "запасн" in (HERE / "SETUP.md").read_text(encoding="utf-8").lower())
+
+# --- уборка ---
+brain._create = _boom_create
+activation.LICENSE_URL = ""
+activation._TRANSPORT = None
+setupwiz._TRANSPORT = None
+setupwiz._now = T_BEFORE
+activation.reset_for_tests()
+setupwiz.reset_for_tests()
+C.set_setup_done(False)
+for _k, _v in _SAVED21.items():
+    if _v is None:
+        os.environ.pop(_k, None)
+    else:
+        os.environ[_k] = _v
+
+
+# ================= 22. WhatsApp в клиентском Корешe (ТЗ-29): код живёт в selftest_wa.py =================
+exec(compile((HERE / "selftest_wa.py").read_text(encoding="utf-8"), "selftest_wa.py", "exec"), globals())
+
 # ================= 14. Dockerfile копирует каждый модуль (новый файл не должен выпасть из образа) =================
 _copy = next(l for l in (HERE / "Dockerfile").read_text(encoding="utf-8").splitlines() if l.startswith("COPY ") and ".py" in l)
-_mods = {f.name for f in HERE.glob("*.py") if f.name != "selftest.py"}
+_mods = {f.name for f in HERE.glob("*.py") if not f.name.startswith("selftest")}
 check("14. Dockerfile: COPY содержит все модули сборки", _mods <= set(_copy.split()), str(_mods - set(_copy.split())))
 
 # ================= 8. следов выпиленного нет =================
-PARTS = [("code", "_task"), ("git", "hub"), ("whats", "app"), ("tele", "gram"), ("cr", "m"),
+# ("whats", "app") убран из списка: с ТЗ-29 WhatsApp в сборке нарочно (сайдкар wa/, модуль wa.py). Остальные следы выпиленного ловятся как раньше.
+PARTS = [("code", "_task"), ("git", "hub"), ("tele", "gram"), ("cr", "m"),
          ("sel", "ena"), ("mac", "agent"), ("Ри", "та")]
 PAT = re.compile("|".join(a + b for a, b in PARTS), re.I)
 hits = []
 for f in sorted(HERE.rglob("*")):
-    if not f.is_file() or any(x in f.parts for x in (".git", "__pycache__", ".venv")):
+    if not f.is_file() or any(x in f.parts for x in (".git", "__pycache__", ".venv", "node_modules")) or f.name == "package-lock.json":
         continue
     # CI-файлы, README про образ и LICENSE (там правообладатель): это законно
     if f.relative_to(HERE).parts[0] == ".git" + "hub" or f.name in ("README.md", "LICENSE"):

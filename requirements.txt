@@ -6,3 +6,5 @@ anthropic==0.69.0
 httpx==0.28.1
 # AES-GCM и HKDF для хранения пакета активации (activation.py). Колёса есть под python:3.11-slim.
 cryptography==44.0.0
+# QR для привязки WhatsApp рисуем на сервере (чистый Python, без внешних скриптов).
+segno==1.6.1

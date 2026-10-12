@@ -12,6 +12,13 @@ _VERBS = (
     r"активировал|отправил|позвонил|заказал|убрал|задал|нажал"
 )
 CLAIM_VERB = re.compile(r"(?<![а-яё])(?:" + _VERBS + r")(?:а|и)?(?![а-яё])", re.I)
+# WhatsApp: что хозяин услышит как «ушло». Проверяется только когда умение включено у этого клиента (иначе «написал» -- обычное слово).
+_WA_VERBS = r"написал|скинул|передал|послал|отправил"
+CLAIM_WA = re.compile(r"(?<![а-яё])(?:" + _WA_VERBS + r")(?:а|и)?(?![а-яё])", re.I)
+_VERBS_IOT = _VERBS.replace("|отправил", "")
+CLAIM_VERB_IOT = re.compile(r"(?<![а-яё])(?:" + _VERBS_IOT + r")(?:а|и)?(?![а-яё])", re.I)
+NO_WA_ACTION = "сообщение не отправлено, ничего не ушло"
+_QUOTED = re.compile(r"«[^»]*»")
 CLAIM_READY = re.compile(r"(?:^|[.!?…,]\s*)(?:(?:ну|да|так|вот)[,\s]+)*(?:(?:всё|все)\s+)?(?:уже\s+)?(?:готово|сделано)(?![а-яё])", re.I)
 NEGATION = {"не", "ни", "нифига", "хрен", "хер"}
 # оговорка о неудаче в самом тексте
@@ -64,8 +71,10 @@ def reason_of(result: str) -> str:
 class Journal:
     """Что за этот ход реально случилось с умным домом (и с памятью, для «Готово» после remember/forget)."""
 
-    def __init__(self):
+    def __init__(self, wa_active: bool = False):
         self.events: list[dict] = []
+        self.wa_active = wa_active                 # у клиента включён WhatsApp: «написал/скинул» тоже проверяем
+        self.wa_events: list[dict] = []
 
     def control(self, target: str, result: str) -> None:
         ok = (result or "").strip() == "ok"
@@ -77,6 +86,24 @@ class Journal:
 
     def memory(self, ok: bool) -> None:
         self.events.append({"tool": "memory", "target": "", "ok": ok, "reason": ""})
+
+    def wa_draft(self, ok: bool, reason: str = "") -> None:
+        self.wa_events.append({"kind": "draft", "ok": ok, "reason": reason})
+
+    def wa_send(self, ok: bool, reason: str = "") -> None:
+        self.wa_events.append({"kind": "send", "ok": ok, "reason": reason})
+        print(f"action: whatsapp -> {'ok' if ok else 'fail'}", flush=True)
+
+    @property
+    def wa_ok(self) -> int:
+        return sum(1 for e in self.wa_events if e["kind"] == "send" and e["ok"])
+
+    @property
+    def wa_drafted(self) -> bool:
+        return any(e["kind"] == "draft" and e["ok"] for e in self.wa_events)
+
+    def wa_failures(self) -> list[str]:
+        return [e["reason"] for e in self.wa_events if not e["ok"]]
 
     @property
     def iot_ok(self) -> int:
@@ -95,23 +122,35 @@ def _negated(text: str, start: int) -> bool:
     return bool(words) and words[-1] in NEGATION
 
 
-def claims_action(text: str) -> bool:
-    """Есть ли в тексте утверждение «я сделал» (не отрицание: «не включил» не считается)."""
+def claims_action(text: str, wa_active: bool = False) -> bool:
+    """Есть ли в тексте утверждение «я сделал» (не отрицание: «не включил» не считается).
+    wa_active: «отправил» и родня -- про WhatsApp, их проверяет claims_wa."""
     t = text or ""
     if CLAIM_READY.search(t):
         return True
-    return any(not _negated(t, m.start()) for m in CLAIM_VERB.finditer(t))
+    rx = CLAIM_VERB_IOT if wa_active else CLAIM_VERB
+    return any(not _negated(t, m.start()) for m in rx.finditer(t))
+
+
+def claims_wa(text: str) -> bool:
+    t = text or ""
+    return any(not _negated(t, m.start()) for m in CLAIM_WA.finditer(t))
 
 
 def check(text: str, journal: Journal, tone: str | None = None, gender: str | None = None) -> str:
     """Вернуть текст как есть или честную замену. Решает только код, по журналу хода."""
-    if not claims_action(text):
+    # внутри кавычек черновика слова хозяина, не заявления ассистента
+    t = _QUOTED.sub(" ", text) if journal.wa_drafted else text
+    if journal.wa_active and claims_wa(t) and not journal.wa_ok and not ADMISSION.search(text):
+        fails = journal.wa_failures()
+        return prompts.honest("fail" if fails else "none", fails[-1] if fails else NO_WA_ACTION, tone, gender)
+    if not claims_action(t, journal.wa_active):
         return text
     if journal.iot_ok:
         if not journal.failures() or ADMISSION.search(text):
             return text                   # было успешное действие; про неудачи модель сама сказала
         return prompts.honest("partial", journal.failures()[-1], tone, gender)
-    if CLAIM_READY.search(text) and not CLAIM_VERB.search(text) and journal.any_ok:
+    if CLAIM_READY.search(t) and not CLAIM_VERB.search(t) and (journal.any_ok or journal.wa_ok):
         return text                       # «Готово» после remember/forget: память записана, это правда
     fails = journal.failures()
     return prompts.honest("fail" if fails else "none", fails[-1] if fails else NO_ACTION, tone, gender)

@@ -5,3 +5,6 @@ __pycache__/
 .venv/
 selftest.py
 *.md
+selftest_wa.py
+wa/node_modules
+wa/auth

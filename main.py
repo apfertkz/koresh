@@ -21,16 +21,19 @@ import setupwiz
 import summarize
 import tts
 import usage
+import wa
 
 @asynccontextmanager
 async def lifespan(_app):
     """Старт: персональный пакет с Volume -> в оперативку (нет/битый -> обычный Кореш); обновление пакета раз в сутки, тихо."""
     activation.load()
     task = asyncio.create_task(activation.refresh_loop())
+    wa.autostart()                      # WhatsApp-демон: только если номер уже привязан
     try:
         yield
     finally:
         task.cancel()
+        await wa.shutdown()
 
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)

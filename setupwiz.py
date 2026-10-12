@@ -1,6 +1,7 @@
 """Страница настройки /setup: мастер на 7 шагов для того, кто ставит Кореша (мы на созвоне с клиентом).
 
-Доступ: одноразовый SETUP_CODE из переменных -> сессия (httpOnly cookie, 2 часа). Нет SETUP_CODE -> /setup не существует (404).
+Доступ: ОДИН код. Клиент вводит код KR-… из бота (образ спрашивает сервер лицензий, activation.check_code), а SETUP_CODE из переменных
+остаётся запасным входом для нас. Любой из них -> сессия (httpOnly cookie, 2 часа). Нет SETUP_CODE -> /setup не существует (404).
 После шага «Готово» страница закрывается; открыть снова можно только с кодом и явной кнопкой «перенастроить».
 Настройки пишутся в MEMORY_DIR/config.json (config.save_values), переменные Railway их перекрывают.
 Секреты (код, токены, ключи, кодовая фраза) в журнал не попадают: пишем только имена ключей и коды результатов."""
@@ -24,6 +25,7 @@ import config as C
 import iot
 import memory
 import prompts
+import wa
 
 router = APIRouter()
 PAGE = Path(__file__).resolve().parent / "setupwiz.html"
@@ -40,6 +42,9 @@ BRAIN_COOLDOWN = 3.0
 
 _TRANSPORT = None              # ворота подставляют httpx.MockTransport (проверка токена умного дома и колбэк)
 _sessions: dict[str, float] = {}
+_wa_only: set[str] = set()               # сессии «только перепривязка WhatsApp»: настройка закрыта, остальное им не отдаётся
+_session_codes: dict[str, str] = {}      # sid -> код KR-…, которым вошли (только в оперативке): блок «Код активации» заполняется им
+KR_SHAPE = re.compile(r"^KR[A-Z0-9]{12}$")
 _fails = {"n": 0, "until": 0.0}
 _heard = {"ts": 0.0, "text": "", "kind": ""}
 _last_brain = {"ts": 0.0}
@@ -51,6 +56,8 @@ def _now() -> float:
 
 def reset_for_tests() -> None:
     _sessions.clear()
+    _session_codes.clear()
+    _wa_only.clear()
     _fails.update(n=0, until=0.0)
     _heard.update(ts=0.0, text="", kind="")
     _last_brain["ts"] = 0.0
@@ -65,6 +72,10 @@ def _purge() -> None:
     now = _now()
     for sid in [s for s, exp in _sessions.items() if exp <= now]:
         _sessions.pop(sid, None)
+    for sid in [s for s in _session_codes if s not in _sessions]:
+        _session_codes.pop(sid, None)
+    for sid in [s for s in _wa_only if s not in _sessions]:
+        _wa_only.discard(sid)
 
 
 def sessions_active() -> bool:
@@ -76,6 +87,12 @@ def _session_ok(request: Request) -> bool:
     _purge()
     sid = request.cookies.get(COOKIE, "")
     return bool(sid) and sid in _sessions
+
+
+def kr_form(raw: str) -> str:
+    """«kr abcd efgh jkmn» -> «KR-ABCD-EFGH-JKMN»; всё, что на код KR-… не похоже, -> пустая строка."""
+    s = re.sub(r"[^A-Za-z0-9]", "", str(raw or "")).upper()
+    return f"KR-{s[2:6]}-{s[6:10]}-{s[10:14]}" if KR_SHAPE.match(s) else ""
 
 
 def _code_ok(code: str) -> bool:
@@ -103,6 +120,14 @@ def _need_auth(request: Request) -> None:
     _need_enabled()
     if not _session_ok(request):
         raise HTTPException(status_code=401)
+    if request.cookies.get(COOKIE, "") in _wa_only:
+        raise HTTPException(status_code=403)          # вошла только перепривязать WhatsApp: остальная настройка закрыта
+
+
+def _need_auth_wa(request: Request) -> None:
+    _need_enabled()
+    if not _session_ok(request):
+        raise HTTPException(status_code=401)
 
 
 async def _body(request: Request) -> dict:
@@ -125,7 +150,7 @@ def note_request(phrase: str, selftest_header: str | None = None) -> None:
         return
     own = bool(selftest_header) and hmac.compare_digest(str(selftest_header), SELFTEST_NONCE)
     text = (phrase or "").strip()
-    kind = "self" if own else ("ping" if text.lower() == "ping" else "phrase")
+    kind = "self" if own else ("ping" if text.lower() == "ping" else ("launch" if not text else "phrase"))
     if kind == "self":
         return
     _heard.update(ts=_now(), text=text[:200], kind=kind)
@@ -191,6 +216,7 @@ def _field(name: str, value) -> dict:
 
 def build_state(request: Request) -> dict:
     h = C.household(with_pack=False)       # содержимое пакета (хозяин, комнаты) на страницу не отдаём
+    login_code = _session_codes.get(request.cookies.get(COOKIE, ""), "")      # тот KR-код, которым эта сессия вошла (её же собственный ввод)
     blocked = C.extra_blocked_names(with_pack=False)
     return {
         "now": _now(),
@@ -215,6 +241,7 @@ def build_state(request: Request) -> dict:
         "callback": bool(C.env("INSTALL_CALLBACK_URL") and C.env("INSTALL_TOKEN")),
         "tones": list(C.TONES),
         "license": {"configured": activation.configured(), "active": activation.active()},   # самого пакета здесь нет никогда
+        "login_code": login_code,
     }
 
 
@@ -249,7 +276,9 @@ async def page():
 @router.get("/setup/api/me")
 async def me(request: Request):
     _need_enabled()
+    st = await wa.status() if (wa.enabled() and wa.linked()) else {"lost": False}
     return _json_ok(authed=_session_ok(request), closed=C.setup_done() and not _session_ok(request),
+                    wa_only=request.cookies.get(COOKIE, "") in _wa_only, wa_lost=bool(st.get("lost")),
                     locked_for=max(0, int(_fails["until"] - _now())))
 
 
@@ -262,7 +291,16 @@ async def login(request: Request):
         return _json_err(429, "locked", "Слишком много неверных кодов. Подожди и попробуй позже.",
                          retry_in=int(_fails["until"] - now) + 1)
     code = str(data.get("code") or "")
-    if not code or not _code_ok(code):
+    kr = ""
+    ok = bool(code) and _code_ok(code)                      # запасной вход для нас: SETUP_CODE из переменных
+    if not ok and code:
+        kr = kr_form(code)
+        if kr:                                              # основной вход клиента: код KR-… из бота, проверяет сервер лицензий
+            chk = await activation.check_code(kr)
+            if chk.get("error") == "net":                   # сервер лицензий не ответил: это не неверная попытка
+                return _json_err(502, "net", chk["message"])
+            ok = bool(chk.get("ok"))
+    if not ok:
         _fails["n"] += 1
         left = MAX_FAILS - _fails["n"]
         print(f"setup: неверный код ({_fails['n']}/{MAX_FAILS})", flush=True)
@@ -273,14 +311,23 @@ async def login(request: Request):
         return _json_err(401, "bad_code", "Код не подошёл.", left=left)
     _fails["n"] = 0
     reopen = bool(data.get("reopen"))
+    wa_only = False
     if C.setup_done():
-        if not reopen:
+        if bool(data.get("wa")) and not reopen:        # только привязать WhatsApp заново: настройка остаётся закрытой
+            wa_only = True
+        elif not reopen:
             return _json_err(403, "closed", "Настройка уже завершена. Чтобы начать заново, нажми «Перенастроить».")
-        C.set_setup_done(False)
-        print("setup: перенастройка открыта", flush=True)
+        else:
+            C.set_setup_done(False)
+            print("setup: перенастройка открыта", flush=True)
     sid = secrets.token_urlsafe(32)
     _sessions[sid] = now + SESSION_TTL
-    resp = _json_ok()
+    if wa_only:
+        _wa_only.add(sid)
+        print("setup: вход только для WhatsApp", flush=True)
+    if kr:
+        _session_codes[sid] = kr
+    resp = _json_ok(wa_only=wa_only)
     secure = (request.headers.get("x-forwarded-proto") or request.url.scheme).split(",")[0].strip() == "https"
     resp.set_cookie(COOKIE, sid, max_age=SESSION_TTL, httponly=True, samesite="strict", secure=secure, path="/setup")
     return resp
@@ -289,7 +336,10 @@ async def login(request: Request):
 @router.post("/setup/api/logout")
 async def logout(request: Request):
     _need_enabled()
-    _sessions.pop(request.cookies.get(COOKIE, ""), None)
+    sid = request.cookies.get(COOKIE, "")
+    _sessions.pop(sid, None)
+    _session_codes.pop(sid, None)
+    _wa_only.discard(sid)
     resp = _json_ok()
     resp.delete_cookie(COOKIE, path="/setup")
     return resp
@@ -298,7 +348,7 @@ async def logout(request: Request):
 @router.get("/setup/api/state")
 async def state(request: Request):
     _need_auth(request)
-    return _json_ok(**build_state(request))
+    return _json_ok(**build_state(request), wa=await wa_public())
 
 
 @router.post("/setup/api/check-brain")
@@ -577,9 +627,131 @@ async def finish(request: Request):
     await _body(request)
     C.set_setup_done(True)
     _sessions.clear()                      # страница закрывается для всех, включая эту сессию
+    _session_codes.clear()
+    _wa_only.clear()
     _heard.update(ts=0.0, text="", kind="")
     cb = await send_install_callback()
     print(f"setup: готово (колбэк: {cb})", flush=True)
     resp = _json_ok(callback=cb)
     resp.delete_cookie(COOKIE, path="/setup")
     return resp
+
+
+# ---------- WhatsApp: привязка, контакты ----------
+async def wa_public() -> dict:
+    """Состояние WhatsApp для страницы. Номеров и имён здесь нет."""
+    st = await wa.status()
+    if wa.enabled() and wa.consent_given() and not wa.running():
+        wa.ensure_started()                # страницу открыли снова после перезапуска сервера: поднимаем демон
+    return {"enabled": wa.enabled(), "switched_off": not C.wa_enabled(), "consent": wa.consent_given(),
+            "consent_text": wa.CONSENT_TEXT, "state": st["state"], "linked": st["linked"], "lost": st["lost"],
+            "sync": wa.sync_status(st), "sync_count": len(wa.synced()),
+            "limits": {"hour": wa.LIMIT_HOUR, "day": wa.LIMIT_DAY}, "contacts_source": C.source("WA_CONTACTS")}
+
+
+def _wa_needs() -> JSONResponse | None:
+    if not wa.enabled():
+        return _json_err(400, "wa_off", "WhatsApp в этой сборке выключен." if not C.wa_enabled()
+                         else "WhatsApp в этом образе недоступен.")
+    if not wa.consent_given():
+        return _json_err(403, "need_consent", "Сначала согласись с риском.")
+    return None
+
+
+@router.get("/setup/api/wa/state")
+async def wa_state(request: Request):
+    _need_auth_wa(request)
+    return _json_ok(**await wa_public())
+
+
+@router.post("/setup/api/wa/consent")
+async def wa_consent(request: Request):
+    _need_auth_wa(request)
+    d = await _body(request)
+    if not wa.enabled():
+        return _json_err(400, "wa_off", "WhatsApp в этом образе недоступен.")
+    if d.get("accepted") is not True:
+        return _json_err(400, "need_consent", "Без согласия с риском WhatsApp не подключается.")
+    wa.give_consent()
+    wa.ensure_started()
+    print("setup: согласие на риск WhatsApp получено", flush=True)
+    return _json_ok(**await wa_public())
+
+
+@router.get("/setup/api/wa/link")
+async def wa_link(request: Request):
+    """Опрос привязки: состояние + QR картинкой, пока ждём сканирование. Без согласия QR не отдаётся и демон не запускается."""
+    _need_auth_wa(request)
+    bad = _wa_needs()
+    if bad is not None:
+        return bad
+    wa.ensure_started()
+    st = await wa.status()
+    qr = None
+    if st["state"] in ("need_qr", "logged_out"):
+        raw = await wa.qr_string()
+        if raw:
+            try:
+                qr = wa.qr_data_uri(raw)
+            except Exception as e:  # noqa: BLE001
+                print(f"setup: QR не нарисовался ({type(e).__name__})", flush=True)
+    return _json_ok(state=st["state"], lost=st["lost"], linked=st["linked"], qr=qr,
+                    sync=wa.sync_status(st), sync_count=len(wa.synced()))
+
+
+@router.post("/setup/api/wa/pair")
+async def wa_pair(request: Request):
+    _need_auth_wa(request)
+    bad = _wa_needs()
+    if bad is not None:
+        return bad
+    d = await _body(request)
+    digits = re.sub(r"\D", "", str(d.get("phone") or ""))
+    if len(digits) < 10 or len(digits) > 15:
+        return _json_err(400, "bad_phone", "Номер телефона, на котором WhatsApp, в формате +7XXXXXXXXXX.")
+    wa.ensure_started()
+    r = await wa.pair(digits)
+    if r.get("ok") and r.get("code"):
+        return _json_ok(code=str(r["code"]))
+    msgs = {"not_ready": "WhatsApp ещё готовит подключение. Подожди пару секунд и нажми ещё раз.",
+            "already_connected": "WhatsApp уже подключён.",
+            "bad_phone": "Номер не подошёл. Нужен номер, на котором WhatsApp, в формате +7XXXXXXXXXX."}
+    print(f"setup: код сопряжения не получен ({str(r.get('error'))[:20]})", flush=True)
+    return _json_err(400, str(r.get("error") or "pair_failed"),
+                     msgs.get(str(r.get("error")), "Код сопряжения не получился. Привяжи по QR-коду, он надёжнее."))
+
+
+@router.post("/setup/api/wa/logout")
+async def wa_logout(request: Request):
+    _need_auth_wa(request)
+    await _body(request)
+    ok = await wa.logout()
+    if not ok:
+        return _json_err(502, "down", "WhatsApp не ответил. Попробуй ещё раз через минуту.")
+    return _json_ok()
+
+
+@router.get("/setup/api/wa/contacts")
+async def wa_contacts_get(request: Request):
+    _need_auth_wa(request)
+    nicks, hidden = C.wa_nicks(), C.wa_hidden()
+    manual = [[n, "+" + num] for n, num in wa.manual_contacts().items()]
+    man_nums = set(wa.manual_contacts().values())
+    sync = [{"name": c["name"], "number": c["number"], "saved": c["saved"], "hidden": c["number"] in hidden,
+             "nicks": nicks.get(c["number"], [])} for c in wa.synced() if c["number"] not in man_nums]
+    man_nicks = {num: nicks.get(num, []) for num in man_nums}
+    return _json_ok(manual=manual, synced=sync, manual_nicks=man_nicks, source=C.source("WA_CONTACTS"))
+
+
+@router.post("/setup/api/wa/contacts")
+async def wa_contacts_set(request: Request):
+    _need_auth_wa(request)
+    d = await _body(request)
+    manual, err = wa.clean_manual(d.get("manual"))
+    if err:
+        return _json_err(400, "bad_contacts", err)
+    hid, nk, err = wa.clean_book_edits(d.get("hidden"), d.get("nicks"), {re.sub(r"\D", "", v) for v in manual.values()})
+    if err:
+        return _json_err(400, "bad_nicks", err)
+    persisted = C.save_values({"WA_CONTACTS": manual or None, "WA_HIDDEN": hid or None, "WA_NICKS": nk or None})
+    return _json_ok(persisted=persisted, count=len(wa.book()), overridden=[k for k in ("WA_CONTACTS", "WA_HIDDEN", "WA_NICKS") if C.source(k) == "env"])

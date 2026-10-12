@@ -1,0 +1,12 @@
+{
+  "name": "koresh-wa-daemon",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WhatsApp-демон Кореша: сайдкар в контейнере, только отправка, слушает 127.0.0.1 (Baileys 7.0.0-rc14, версия закреплена)",
+  "main": "wa-daemon.js",
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "@whiskeysockets/baileys": "7.0.0-rc14",
+    "pino": "9.14.0"
+  }
+}

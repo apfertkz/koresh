@@ -7,6 +7,7 @@ import iot
 import memory
 import prompts
 import usage
+import wa
 
 _client = None
 
@@ -49,6 +50,11 @@ TOOLS = [
         },
     },
 ]
+
+
+def tools() -> list[dict]:
+    """Инструменты хода: умный дом и память всегда, WhatsApp -- только когда он привязан и есть кому писать."""
+    return TOOLS + wa.TOOLS if wa.available() else TOOLS
 
 
 async def _create(**kw):
@@ -122,11 +128,16 @@ def _refusal_category(resp):
 async def think(history: list[dict], uid: str | None = None) -> str:
     """history — список messages, будет дополнен (только в конец). uid — чья долгая память (remember/forget)."""
     system = [{"type": "text", "text": prompts.system_prompt(), "cache_control": {"type": "ephemeral"}}]
-    journal = honesty.Journal()          # что за этот ход реально сделано с умным домом
+    wa_active = wa.available()
+    journal = honesty.Journal(wa_active=wa_active)          # что за этот ход реально сделано с умным домом и WhatsApp
+    tool_list = tools()
+    if wa_active:
+        wa.note_turn(uid, _recent_user_text(history, 1))      # считаем реплику хозяина; «нет/стоп» стирает черновик
 
     def finish(text: str) -> str:
-        """Утверждение «сделал» без успешного действия -> честная фраза (и в истории тоже, чтобы модель не верила вранью)."""
-        fixed = honesty.check(text, journal)
+        """Утверждение «сделал» без успешного действия -> честная фраза (и в истории тоже, чтобы модель не верила вранью).
+        Ход закончился черновиком WhatsApp: хозяин услышит ровно то, что уйдёт (иначе подставляется каноничная фраза)."""
+        fixed = wa.ensure_readback(uid, text) if journal.wa_drafted else honesty.check(text, journal)
         if fixed != text:
             print("honesty: заявление о действии без успешного вызова заменено", flush=True)
             kept = [b for b in history[-1]["content"] if getattr(b, "type", None) != "text"] \
@@ -137,7 +148,7 @@ async def think(history: list[dict], uid: str | None = None) -> str:
     for _ in range(5):
         if usage.exceeded():
             return prompts.phrase("limit")
-        resp = await _create(system=system, tools=TOOLS, messages=history, **request_params())
+        resp = await _create(system=system, tools=tool_list, messages=history, **request_params())
         usage.add(_tokens(resp))
         if resp.stop_reason == "refusal":      # классификатор отказал; пустой ход в историю не кладём
             print(f"brain refusal: {_refusal_category(resp)}", flush=True)
@@ -164,6 +175,14 @@ async def think(history: list[dict], uid: str | None = None) -> str:
                     out = await iot.control(a["target"], a["target_id"], a.get("capability", ""),
                                             a.get("instance", ""), a.get("value"), _recent_user_text(history))
                     journal.control(str(a.get("target", "")), out)
+                elif block.name == "whatsapp_draft" and wa_active:
+                    res = await wa.tool_draft(uid, str(a.get("to", "")), str(a.get("text", "")))
+                    journal.wa_draft(res.ok, res.reason)
+                    out = res.text
+                elif block.name == "whatsapp_confirm" and wa_active:
+                    res = await wa.tool_confirm(uid, _recent_user_text(history, 1))
+                    journal.wa_send(res.ok, res.reason)
+                    out = res.text
                 elif block.name == "remember":
                     out = memory.store_for(uid).remember(str(a.get("fact", "")))[1] if uid else "error: память недоступна"
                     journal.memory(not out.startswith(("error", "refused")))
@@ -180,6 +199,10 @@ async def think(history: list[dict], uid: str | None = None) -> str:
                     journal.control(str(a.get("target", "")), out)
                 elif block.name == "list_devices":
                     journal.list_failed(out)
+                elif block.name == "whatsapp_draft":
+                    journal.wa_draft(False, "WhatsApp не ответил")
+                elif block.name == "whatsapp_confirm":
+                    journal.wa_send(False, "WhatsApp не ответил")
             results.append({"type": "tool_result", "tool_use_id": block.id, "content": str(out)[:6000]})
         history.append({"role": "user", "content": results})
     return "Что-то пошло не так, повтори."

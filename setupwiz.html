@@ -56,6 +56,10 @@ input[type=radio],input[type=checkbox]{width:20px;height:20px;accent-color:var(-
 .tag.src{background:var(--yellow)}
 .row{display:grid;grid-template-columns:1fr 1.4fr 44px;gap:8px;margin:6px 0}
 .row .x{font:inherit;font-weight:900;background:var(--white);border:var(--line);cursor:pointer;min-width:44px;min-height:44px}
+.phone{display:flex;align-items:stretch}
+.phone .plus{font-weight:900;font-size:18px;border:var(--line);border-right:0;background:var(--yellow);padding:9px 10px;user-select:none}
+.phone input{min-width:0}
+.qr{display:block;margin:12px 0;border:var(--line);background:#fff;max-width:100%;height:auto}
 .chips{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}
 .chip{border:var(--line);background:var(--white);padding:3px 12px;min-height:44px;display:inline-flex;align-items:center;font-weight:700;cursor:pointer;font-size:14px}
 .chip.on{background:var(--orange)}
@@ -93,7 +97,7 @@ const app = document.getElementById('app');
 { const rc = Element.prototype.replaceChildren; Element.prototype.replaceChildren = function (...k) { return rc.apply(this, k.filter(c => c != null && c !== false)); }; }
 let S = null;            // состояние сервера
 let step = 0;
-let ui = {brain: false, iot: false, char: false, home: false, heard: false};
+let ui = {brain: false, iot: false, char: false, home: false, heard: false, wa: false};
 let devs = null;         // список устройств {count, devices, scenarios, rooms...}
 let pollTimer = null;
 
@@ -184,33 +188,39 @@ function skillNames() {
 function setLogout(show) { document.getElementById('logout').classList.toggle('hidden', !show); }
 document.getElementById('logout').addEventListener('click', async () => { stopPoll(); await api('logout', {}); renderLogin(); });
 
-function renderLogin(msg, closed) {
+const WA_LOST_TEXT = 'WhatsApp отвалился: Кореш не сможет писать сообщения, пока номер не привязан заново. Введи код из бота и привяжи заново.';
+function renderLogin(msg, closed, waLost) {
   setLogout(false);
-  const input = h('input', {type: 'password', autocomplete: 'off', placeholder: 'Код установки', 'aria-label': 'Код установки'});
+  // код KR-… из бота: обычное текстовое поле (его нужно сверить глазами), автозаполнение браузера гасим
+  const input = h('input', {type: 'text', class: 'mono', name: 'koresh-login-code', autocomplete: 'off', autocapitalize: 'characters', autocorrect: 'off',
+    spellcheck: 'false', 'data-lpignore': 'true', 'data-1p-ignore': 'true', 'data-form-type': 'other', placeholder: 'KR-XXXX-XXXX-XXXX', 'aria-label': 'Код из бота'});
   const out = h('div');
-  const go = async (reopen) => {
+  const go = async (mode) => {
     out.replaceChildren();
     const code = input.value.trim();
-    if (!code) { out.append(note('bad', 'Введи код.')); return; }
-    const r = await api('login', {code, reopen: !!reopen});
+    if (!code) { out.append(note('bad', 'Введи код из бота.')); return; }
+    const r = await api('login', {code, reopen: mode === 'reopen', wa: mode === 'wa'});
     input.value = '';
-    if (r.ok) { start(); return; }
+    if (r.ok) { if (r.wa_only) renderWaOnly(); else start(); return; }
     if (r.error === 'closed') { renderLogin(r.message, true); return; }
     out.append(note('bad', r.message || 'Не получилось войти.'));
   };
-  input.addEventListener('keydown', e => { if (e.key === 'Enter') go(closed); });
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') go(closed ? 'reopen' : ''); });
   app.replaceChildren(h('div', {class: 'card'},
     h('h1', 0, closed ? 'Настройка завершена' : 'Вход в настройку'),
+    waLost ? note('bad', WA_LOST_TEXT) : null,
     msg ? note(closed ? 'info' : 'warn', msg) : null,
     h('p', 0, closed
-      ? 'Страница закрыта. Чтобы поменять настройки, введи код установки и нажми «Перенастроить».'
-      : 'Введи код установки (переменная SETUP_CODE в Railway).'),
+      ? 'Страница закрыта. Чтобы поменять настройки, введи код из бота и нажми «Перенастроить». Если нужно только заново привязать WhatsApp, нажми кнопку ниже: остальные настройки при этом не открываются.'
+      : 'Введи код из бота: он начинается с KR- и лежит в чате с ботом-установщиком на шаге про /setup. Больше никаких кодов не нужно.'),
     input, out,
-    closed ? btn('Перенастроить', () => go(true)) : btn('Войти', () => go(false))));
+    closed ? h('div', {class: 'nav'}, btn('Перенастроить', () => go('reopen')), btn('Привязать WhatsApp заново', () => go('wa'), 'alt'))
+           : btn('Войти', () => go(''))));
 }
 
 /* ---------- каркас мастера ---------- */
-const STEPS = ['Мозг', 'Умный дом', 'Характер', 'Дом', 'Алиса', 'Проверка', 'Готово'];
+const STEPS = ['Мозг', 'Умный дом', 'Характер', 'Дом', 'Алиса', 'Проверка', 'WhatsApp', 'Готово'];
+const LAST = STEPS.length - 1;
 function stopPoll() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
 
 async function start() {
@@ -224,14 +234,14 @@ async function start() {
 function go(n) {
   stopPoll();
   step = Math.max(0, Math.min(STEPS.length - 1, n));
-  const views = [stepBrain, stepIot, stepChar, stepHome, stepAlice, stepCheck, stepDone];
+  const views = [stepBrain, stepIot, stepChar, stepHome, stepAlice, stepCheck, stepWa, stepDone];
   const nav = h('ul', {class: 'stepper'}, STEPS.map((t, i) => {
-    const d = [ui.brain, ui.iot || (S && S.iot.set), ui.char, ui.home, false, ui.heard, false][i];
-    return h('li', 0, h('button', {type: 'button', class: (i === step ? 'cur ' : '') + (d && i !== 6 ? 'done' : ''), on: {click: () => go(i)}},
-      h('b', 0, d && i !== 6 ? '✓' : i + 1), t));
+    const d = [ui.brain, ui.iot || (S && S.iot.set), ui.char, ui.home, false, ui.heard, ui.wa || !!(S && S.wa && S.wa.linked && !S.wa.lost), false][i];
+    return h('li', 0, h('button', {type: 'button', class: (i === step ? 'cur ' : '') + (d && i !== LAST ? 'done' : ''), on: {click: () => go(i)}},
+      h('b', 0, d && i !== LAST ? '✓' : i + 1), t));
   }));
-  const body = h('div', {class: 'card'}, views[step]());
-  const nxt = step < 6 ? btn('Дальше', () => go(step + 1)) : null;
+  const body = h('div', {class: 'card'}, waBanner(), views[step]());
+  const nxt = step < LAST ? btn('Дальше', () => go(step + 1)) : null;
   const prv = step > 0 ? btn('Назад', () => go(step - 1), 'alt') : h('span');
   app.replaceChildren(nav, body, h('div', {class: 'nav'}, prv, nxt));
   window.scrollTo(0, 0);
@@ -271,11 +281,11 @@ function deviceList(d) {
         x.locked ? h('span', {class: 'tag lock'}, lockLabel) : null))));
 }
 /* код активации (тариф «Настрою сам»): вход Яндексом идёт через центральный колбэк сервера лицензий */
-function licenseBlock() {
+function licenseBlock(onIot) {
   const L = S.license;
   if (!L || !L.configured) return null;
   const code = h('input', {type: 'text', class: 'mono', name: 'koresh-activation-code', autocomplete: 'off', autocapitalize: 'characters', autocorrect: 'off',
-    spellcheck: 'false', placeholder: 'KR-XXXX-XXXX-XXXX', 'aria-label': 'Код активации'});
+    spellcheck: 'false', placeholder: 'KR-XXXX-XXXX-XXXX', 'aria-label': 'Код активации', value: S.login_code || ''});
   const out = h('div');
   const tick = async () => {
     const r = await api('license/status');
@@ -283,10 +293,11 @@ function licenseBlock() {
     stopPoll();
     if (r.status === 'failed') { out.replaceChildren(note('bad', r.message || 'Не получилось.')); return; }
     S.license.active = true;
-    if (r.iot) { S.iot = {set: true, source: 'setup'}; devs = r.devices; ui.iot = true; }
+    if (r.iot) { S.iot = {set: true, source: 'setup'}; devs = r.devices; ui.iot = true; if (onIot) onIot(); }
     out.replaceChildren(
       note('ok', 'Код принят: персональные настройки получены и сохранены зашифрованными.'),
       r.saved ? null : note('warn', 'Диск недоступен: настройки живут до перезапуска. Проверь Volume на /data.'),
+      r.iot ? note('ok big', 'Готово, жми «Дальше». ', btn('Дальше', () => go(2))) : null,
       r.iot ? deviceList(devs) : note('warn', 'Умный дом не подключился автоматически. Вставь токен вручную ниже.'));
   };
   const start = btn('Войти через Яндекс', async () => {
@@ -302,7 +313,7 @@ function licenseBlock() {
   return h('div', 0,
     h('h3', 0, 'Код активации'),
     L.active ? note('ok', 'Код уже активирован. Можно ввести другой, если нужно.') : null,
-    h('p', 0, 'Код из бота-установщика. Один вход Яндексом: и персональные настройки, и умный дом подключатся сами. Нет кода или не вышло: ручной путь ниже работает как раньше.'),
+    h('p', 0, 'Это тот же код из бота, которым ты вошла на страницу, он уже вписан. Один вход Яндексом: и персональные настройки, и умный дом подключатся сами. Не вышло: ручной путь ниже работает как раньше.'),
     h('label', 0, 'Код'), code, start, out);
 }
 function stepIot() {
@@ -321,6 +332,9 @@ function stepIot() {
   });
   const gos = note('warn', 'Если Яндекс просит верификацию приложения через Госуслуги, пропусти: для себя всё работает и без неё. ', chk());
 
+  // жёлтая плашка про общее приложение пугает: показываем её, только пока умный дом не подключён (и прячем, как только подключился)
+  const plaque = (!S.yandex_client_id && !S.iot.set)
+    ? note('warn', 'Общее приложение «Кореш» не подключено (нет YANDEX_OAUTH_CLIENT_ID). Идём запасным путём: клиент создаёт своё приложение в Яндексе.') : null;
   const main = S.yandex_client_id
     ? h('div', 0,
         h('ol', {class: 'steps'},
@@ -330,7 +344,7 @@ function stepIot() {
           h('li', 0, 'Скопируй токен целиком и вставь его в поле ниже. Яндекс его потом не покажет.')),
         gos)
     : h('div', 0,
-        note('warn', 'Общее приложение «Кореш» не подключено (нет YANDEX_OAUTH_CLIENT_ID). Идём запасным путём: клиент создаёт своё приложение в Яндексе.'),
+        plaque,
         h('ol', {class: 'steps'},
           h('li', 0, 'Открой страницу создания приложения под Яндекс ID клиента.', h('br'),
             ext('https://oauth.yandex.ru/client/new', 'Открыть oauth.yandex.ru'), ' ', chk()),
@@ -363,7 +377,7 @@ function stepIot() {
   return h('div', 0,
     h('h2', 0, 'Шаг 2. Умный дом'),
     h('p', 0, 'Без этого Кореш только болтает. Токен даёт ему право включать свет и розетки. Права на замки и ворота у него всё равно нет, пока ты сам не включишь их на шаге 4.'),
-    licenseBlock(),
+    licenseBlock(() => { if (plaque) plaque.className = 'note warn hidden'; }),
     S.iot.set ? note('ok', 'Токен уже есть ', srcTag(S.iot.source), ' Можно показать устройства или вставить новый токен.') : null,
     S.iot.set ? h('div', 0, show, list) : null,
     main,
@@ -516,6 +530,7 @@ function stepAlice() {
         h('span', {class: 'mock btnm'}, 'Создать диалог'), ' → ', h('span', {class: 'mock btnm'}, 'Навык в Алисе'), ' ', chk()),
       h('li', 0, 'Название навыка (по-русски, не латиницей): ', val(sk.title),
         h('br'), 'Активационное имя, два слова: ', val(sk.activation), ' ', chk(),
+        h('div', {class: 'small'}, 'Впиши в Диалогах именно это активационное имя: его же ты потом скажешь Алисе (бот на шаге про навык просит то же самое).'),
         h('div', {class: 'small'}, 'Два слова, чтобы имя не путалось с самой Алисой и с другими навыками. [ПРОВЕРИТЬ правила Яндекса для активационного имени: допустимая длина и слова.]'),
         sk.latin ? h('div', {class: 'small'}, 'Имя ассистента написано латиницей, а Яндекс принимает название и активационное имя по-русски, поэтому подставлено «Кореш».') : null),
       h('li', 0, 'Backend: Webhook URL. Вставь адрес из жёлтого блока выше.', h('br'), h('span', {class: 'mock'}, 'Webhook URL: https://…/alice/••••••••'), ' ', chk()),
@@ -536,7 +551,12 @@ function stepCheck() {
   const out = h('div');
   let since = 1e12;
   function heardUI(r) {
-    ui.heard = true; stopPoll();
+    ui.heard = true;
+    if (r.kind === 'launch') {      // навык запущен без реплики (пустая): опрос не гасим, ждём настоящее «привет»
+      status.className = 'note ok big'; status.replaceChildren('Навык запущен — скажи «привет»');
+      return;
+    }
+    stopPoll();
     const said = r.kind === 'ping' ? 'Яндекс достучался (проверка связи).' : 'Кореш тебя услышал: «' + r.text + '»';
     status.className = 'note ok big'; status.replaceChildren(said);
   }
@@ -547,7 +567,7 @@ function stepCheck() {
   api('heard?since=1e12').then(r => { if (r.ok) { since = r.now; pollTimer = setInterval(tick, 2000); } });
   return h('div', 0,
     h('h2', 0, 'Шаг 6. Проверка'),
-    h('p', 0, 'Скажи колонке: «Алиса, запусти навык ', h('b', 0, skillNames().activation), '», потом «привет». Либо напиши «привет» во вкладке «Тестирование» в консоли Диалогов. Страница сама поймает запрос.'),
+    h('p', 0, 'Скажи Алисе ровно то активационное имя, которое ты вписала в Диалогах (мы предлагали «', h('b', 0, skillNames().activation), '»). Например: «Алиса, запусти навык ', h('b', 0, skillNames().activation), '». Потом скажи «привет». Либо напиши «привет» во вкладке «Тестирование» в консоли Диалогов. Страница сама поймает запрос.'),
     status,
     h('h3', 0, 'Без Станции'),
     h('p', 0, 'Кнопка шлёт тестовую реплику на этот же вебхук. Так видно, что мозг и связка работают, даже пока навык ещё не создан. Это один обычный вызов мозга (доли цента).'),
@@ -560,21 +580,208 @@ function stepCheck() {
     out);
 }
 
-/* ---------- 7. готово ---------- */
+/* ---------- 7. WhatsApp (необязательно) ---------- */
+function waBanner() {
+  return S && S.wa && S.wa.lost ? note('bad', 'WhatsApp отвалился: Кореш не может писать сообщения. Привяжи номер заново на шаге «WhatsApp».') : null;
+}
+/* номер: «+» вынесен из поля и стереть его нельзя; в поле только цифры */
+function phoneField(value) {
+  const inp = h('input', {type: 'text', inputmode: 'numeric', maxlength: 11, placeholder: '7XXXXXXXXXX', 'aria-label': 'Номер после плюса', value: String(value || '').replace(/\D/g, ''), class: 'mono'});
+  inp.addEventListener('input', () => { inp.value = String(inp.value).replace(/\D/g, '').slice(0, 11); });
+  const box = h('div', {class: 'phone'}, h('span', {class: 'plus'}, '+'), inp);
+  box.digits = () => String(inp.value).replace(/\D/g, '');
+  return box;
+}
+function stepWa() {
+  const root = h('div', 0, h('h2', 0, 'Шаг 7. WhatsApp (необязательно)'));
+  const body = h('div', 0, note('info', 'Загружаю…'));
+  root.append(body);
+  waRender(body, false);
+  return root;
+}
+function renderWaOnly() {
+  stopPoll();
+  setLogout(true);
+  const body = h('div', 0, note('info', 'Загружаю…'));
+  app.replaceChildren(h('div', {class: 'card'}, h('h1', 0, 'WhatsApp: привязка'),
+    h('p', 0, 'Настройка Кореша закрыта, здесь только WhatsApp. Когда закончишь, нажми «Выйти» вверху.'), body));
+  waRender(body, true);
+}
+async function waRender(body, only) {
+  const r = await api('wa/state');
+  if (!r.ok) { body.replaceChildren(note('bad', r.message || 'Не получилось загрузить состояние WhatsApp.')); return; }
+  if (S && !only) S.wa = r;
+  if (!r.enabled) {
+    body.replaceChildren(note('info', r.switched_off ? 'WhatsApp выключен в настройках сервера (WA_ENABLED=0).' : 'В этом образе WhatsApp недоступен.'));
+    return;
+  }
+  const link = h('div');
+  const contacts = h('div');
+  body.replaceChildren(
+    h('p', 0, 'Кореш сможет писать сообщения людям из твоих контактов в WhatsApp. Только по твоей просьбе и только после твоего «да»: он зачитывает текст и получателя, а уходит ровно то, что зачитано. Чужие сообщения он не читает.'),
+    h('p', {class: 'small'}, 'Лимит: не больше ' + r.limits.hour + ' сообщений в час и ' + r.limits.day + ' в сутки.'),
+    r.lost ? note('bad', WA_LOST_TEXT.replace(' Введи код из бота и привяжи заново.', ' Привяжи заново ниже.')) : null,
+    link,
+    h('h3', 0, 'Кому Кореш может писать'),
+    contacts);
+  waLink(link, r, only);
+  waContacts(contacts, r);
+}
+function waLink(box, W, only) {
+  if (!W.consent) {
+    const cb = h('input', {type: 'checkbox'});
+    const out = h('div');
+    box.replaceChildren(
+      h('h3', 0, 'Привязка'),
+      note('warn', W.consent_text),
+      h('label', {class: 'opt', style: 'font-weight:700'}, cb, h('span', 0, 'Я понимаю риск и хочу подключить WhatsApp')),
+      btn('Показать QR-код', async () => {
+        if (!cb.checked) { out.replaceChildren(note('bad', 'Без галочки WhatsApp не подключаем: прочитай предупреждение и согласись с риском.')); return; }
+        const r = await api('wa/consent', {accepted: true});
+        if (!r.ok) { out.replaceChildren(note('bad', r.message || 'Не получилось.')); return; }
+        W.consent = true;
+        waLink(box, W, only);
+      }),
+      out);
+    return;
+  }
+  const status = h('div');
+  const pairOut = h('div');
+  const phone = phoneField('');
+  box.replaceChildren(
+    h('h3', 0, 'Привязка'),
+    status,
+    h('h3', 0, 'Страница открыта на телефоне?'),
+    h('p', {class: 'small'}, 'Тогда QR отсканировать нечем: введи номер, на котором WhatsApp, и получи код из восьми символов.'),
+    h('div', {class: 'row', style: 'grid-template-columns:1fr auto'}, phone, btn('Получить код', async () => {
+      const d = phone.digits();
+      if (d.length < 10) { pairOut.replaceChildren(note('bad', 'Впиши номер полностью: +7 и ещё десять цифр.')); return; }
+      pairOut.replaceChildren(note('info', 'Прошу код у WhatsApp…'));
+      const r = await api('wa/pair', {phone: '+' + d});
+      if (!r.ok) { pairOut.replaceChildren(note('bad', r.message || 'Код не получился. Привяжи по QR.')); return; }
+      pairOut.replaceChildren(h('div', {class: 'url mono'}, r.code),
+        h('p', 0, 'В WhatsApp: Настройки → Связанные устройства → Привязать устройство → «Привязать по номеру телефона», и введи этот код.'));
+    }, 'alt')),
+    pairOut);
+  function paint(r) {
+    ui.wa = r.state === 'connected';
+    if (S && S.wa) { S.wa.linked = r.linked; S.wa.lost = r.lost; }
+    if (r.state === 'connected') {
+      status.replaceChildren(note('ok big', 'WhatsApp подключён. Кореш готов писать.'),
+        btn('Отвязать WhatsApp', async () => {
+          if (!confirm('Отвязать WhatsApp от Кореша?')) return;
+          const o = await api('wa/logout', {});
+          status.replaceChildren(note(o.ok ? 'info' : 'bad', o.ok ? 'Отвязано. Чтобы подключить заново, подожди пару секунд.' : (o.message || 'Не получилось.')));
+        }, 'alt'));
+    } else if (r.state === 'need_qr' || r.state === 'logged_out') {
+      status.replaceChildren(
+        r.qr ? h('img', {src: r.qr, alt: 'QR-код для привязки WhatsApp', width: 240, height: 240, class: 'qr'}) : note('info', 'Готовлю QR-код…'),
+        h('ol', {class: 'steps'},
+          h('li', 0, 'Открой WhatsApp на телефоне, номер которого подключаешь.'),
+          h('li', 0, 'Настройки → Связанные устройства → Привязать устройство.'),
+          h('li', 0, 'Наведи камеру на QR-код. Он обновляется сам, страницу не закрывай.')));
+    } else {
+      status.replaceChildren(note('info', 'Готовлю подключение… Это занимает несколько секунд.'));
+    }
+  }
+  async function tick() {
+    const r = await api('wa/link');
+    if (r.ok) paint(r); else if (r.error === 'need_consent') { W.consent = false; stopPoll(); waLink(box, W, only); }
+  }
+  status.replaceChildren(note('info', 'Готовлю подключение…'));
+  tick();
+  pollTimer = setInterval(tick, 2500);
+}
+function waContacts(box, W) {
+  box.replaceChildren(note('info', 'Загружаю контакты…'));
+  api('wa/contacts').then(r => {
+    if (!r.ok) { box.replaceChildren(note('bad', r.message || 'Контакты не загрузились.')); return; }
+    const rows = [];                                     // вручную: {name, phone, nick}
+    const hidden = new Set(r.synced.filter(c => c.hidden).map(c => c.number));
+    const nicks = {};
+    r.synced.forEach(c => { if (c.nicks.length) nicks[c.number] = c.nicks.join(', '); });
+    Object.keys(r.manual_nicks || {}).forEach(n => { if (r.manual_nicks[n].length) nicks[n] = r.manual_nicks[n].join(', '); });
+    const manualBox = h('div');
+    const out = h('div');
+    function addRow(name, num, nick) {
+      const nm = h('input', {type: 'text', maxlength: 40, placeholder: 'Имя (Оля)', 'aria-label': 'Имя', value: name || ''});
+      const ph = phoneField(num);
+      const nk = h('input', {type: 'text', maxlength: 60, placeholder: 'Прозвище (жена)', 'aria-label': 'Прозвище', value: nick || ''});
+      const row = {nm, ph, nk, del: false};
+      const x = h('button', {type: 'button', class: 'x', 'aria-label': 'Убрать', on: {click: () => { row.del = true; el.replaceChildren(); }}}, '×');
+      const el = h('div', {class: 'row', style: 'grid-template-columns:1fr 1.2fr 1fr 44px'}, nm, ph, nk, x);
+      rows.push(row);
+      manualBox.append(el);
+    }
+    r.manual.forEach(([n, p]) => addRow(n, p, nicks[String(p).replace(/\D/g, '')] || ''));
+    if (!r.manual.length) addRow('', '', '');
+    // контакты из WhatsApp: поиск, «скрыть», прозвища
+    const q = h('input', {type: 'search', placeholder: 'Поиск по имени', 'aria-label': 'Поиск по контактам'});
+    const list = h('div');
+    function paintList() {
+      const f = String(q.value || '').trim().toLowerCase();
+      const hit = r.synced.filter(c => !f || c.name.toLowerCase().includes(f) || (nicks[c.number] || '').toLowerCase().includes(f));
+      list.replaceChildren(...hit.slice(0, 100).map(c => {
+        const cb = h('input', {type: 'checkbox', checked: hidden.has(c.number), 'aria-label': 'Скрыть ' + c.name});
+        cb.addEventListener('change', () => { if (cb.checked) hidden.add(c.number); else hidden.delete(c.number); });
+        const nk = h('input', {type: 'text', maxlength: 60, placeholder: 'Прозвище (жена)', 'aria-label': 'Прозвище для ' + c.name, value: nicks[c.number] || ''});
+        nk.addEventListener('input', () => { nicks[c.number] = nk.value; });
+        return h('div', {class: 'row', style: 'grid-template-columns:1.3fr 1fr auto'},
+          h('span', 0, c.name, ' ', h('span', {class: 'small mono'}, '…' + c.number.slice(-4))), nk,
+          h('label', {class: 'small'}, cb, ' скрыть'));
+      }), hit.length > 100 ? h('p', {class: 'small'}, 'Показаны первые 100 из ' + hit.length + ', уточни поиск.') : null,
+      hit.length ? null : h('p', {class: 'small'}, 'Ничего не найдено.'));
+    }
+    q.addEventListener('input', paintList);
+    paintList();
+    let syncNote = null;
+    if (!r.synced.length) {
+      syncNote = W.sync === 'empty' ? note('warn', 'WhatsApp не отдал контакты, добавь нужных руками.')
+        : (W.sync === 'pending' ? note('info', 'Контакты подтягиваются из WhatsApp, это может занять минуту. Обнови шаг, если список не появился.')
+        : note('info', 'Контакты из WhatsApp подтянутся сами после привязки. Нужных можно добавить и руками.'));
+    }
+    box.replaceChildren(
+      h('p', {class: 'small'}, 'После привязки имена подтягиваются из WhatsApp сами. Лишних можно скрыть, а любому дать прозвище: «жена» → Оля. Номера в мозг Кореша не уходят, поиск по имени делает сервер.'),
+      syncNote,
+      r.synced.length ? h('div', 0, h('p', {class: 'small'}, 'Из WhatsApp: ' + r.synced.length), q, list) : null,
+      h('h3', 0, 'Добавить руками'),
+      h('p', {class: 'small'}, 'Имя, номер в формате +7XXXXXXXXXX и, если хочешь, прозвище. До 30 штук.'),
+      manualBox, btn('+ ещё контакт', () => addRow('', '', ''), 'alt'),
+      h('div', {style: 'margin-top:14px'}, btn('Сохранить контакты', async () => {
+        const manual = [], mn = {};
+        rows.filter(x => !x.del).forEach(x => {
+          const name = String(x.nm.value || '').trim(), d = x.ph.digits();
+          if (!name && !d) return;
+          manual.push([name, '+' + d]);
+          if (String(x.nk.value || '').trim() && d) mn[d] = x.nk.value;
+        });
+        const allNicks = Object.assign({}, nicks, mn);
+        const res = await api('wa/contacts', {manual, hidden: [...hidden], nicks: allNicks});
+        if (!res.ok) { out.replaceChildren(note('bad', res.message || 'Не получилось сохранить.')); return; }
+        out.replaceChildren(note('ok', 'Сохранено. Применяется сразу. Контактов у Кореша: ' + res.count + '.'),
+          res.persisted ? null : note('warn', 'Диск недоступен: контакты живут до перезапуска.'),
+          res.overridden.length ? note('warn', 'Что-то задано в переменных Railway (' + res.overridden.join(', ') + ') и главнее страницы.') : null);
+      })),
+      out);
+  });
+}
+
+/* ---------- 8. готово ---------- */
 function stepDone() {
   const out = h('div');
   const row = (ok, text) => h('li', 0, h('span', {class: 'tag ' + (ok ? '' : 'lock')}, ok ? 'есть' : 'нет'), text);
   return h('div', 0,
-    h('h2', 0, 'Шаг 7. Готово'),
+    h('h2', 0, 'Шаг 8. Готово'),
     h('p', 0, 'Сводка перед закрытием. Красное можно не чинить, но тогда лучше знать, чего не хватает.'),
     h('ul', {class: 'list'},
       row(S.brain_key_set && ui.brain, 'Мозг: ключ проверен на шаге 1' + (S.brain_key_set && !ui.brain ? ' (ключ есть, но кнопку проверки не нажимали)' : '')),
       row(S.iot.set, 'Умный дом: токен подключён'),
       row(S.webhook.secret_set, 'Вебхук: секрет задан'),
+      S.wa && S.wa.enabled ? row(S.wa.linked && !S.wa.lost, S.wa.lost ? 'WhatsApp: отвалился, нужна перепривязка (шаг 7)' : (S.wa.linked ? 'WhatsApp: подключён' : 'WhatsApp: не подключён (необязательно)')) : null,
       row(ui.heard, 'Яндекс достучался до вебхука' + (ui.heard ? '' : ' (на шаге 6 ещё не было запроса)')),
       row(S.memory === 'disk', S.memory === 'disk' ? 'Память: диск доступен' : 'Память: диск недоступен, Кореш будет забывать при перезапуске (нужен Volume на /data и RAILWAY_RUN_UID=0)'),
       h('li', 0, h('span', {class: 'tag'}, 'замки'), S.allow_locks.value ? 'Включены, только по кодовой фразе' : 'Выключены (так и должно быть по умолчанию)')),
-    note('warn', 'После завершения страница закрывается. Потом удали переменную SETUP_CODE в Railway (шаг не обязателен, но так надёжнее). Вернуться сюда можно только с кодом.'),
+    note('warn', 'После завершения страница закрывается. Вернуться сюда можно только с тем же кодом из бота и кнопкой «Перенастроить».'),
     S.callback ? h('p', {class: 'small'}, 'После завершения сервер отправит нам короткое «установлено»: без ключей клиента и без разговоров.') : null,
     btn('Завершить установку', async () => {
       if (!confirm('Закрыть страницу настройки?')) return;
@@ -584,7 +791,7 @@ function stepDone() {
       const cb = {sent: 'Сообщение «установлено» отправлено.', failed: 'Сообщение «установлено» отправить не вышло. Установка от этого не страдает, оператору сказать на словах.', off: ''}[r.callback] || '';
       app.replaceChildren(h('div', {class: 'card'}, h('h1', 0, 'Готово'),
         note('ok', 'Кореш настроен. Страница закрыта.'), cb ? note(r.callback === 'sent' ? 'info' : 'warn', cb) : null,
-        h('p', 0, 'Теперь удали переменную SETUP_CODE в Railway. Чтобы поменять настройки, вернись на ', h('span', {class: 'mono'}, '/setup'), ' с кодом.')));
+        h('p', 0, 'Чтобы поменять настройки, вернись на ', h('span', {class: 'mono'}, '/setup'), ' с кодом из бота.')));
     }),
     out);
 }
@@ -592,10 +799,10 @@ function stepDone() {
 /* ---------- запуск ---------- */
 (async function init() {
   const r = await api('me');
-  if (r.ok && r.authed) { start(); return; }
+  if (r.ok && r.authed) { if (r.wa_only) renderWaOnly(); else start(); return; }
   if (r.status === 404) { app.replaceChildren(h('p', 0, 'Страница настройки выключена.')); return; }
-  if (r.ok && r.closed) { renderLogin('Настройка уже завершена.', true); return; }
-  renderLogin(r.locked_for ? 'Слишком много неверных кодов, подожди.' : null);
+  if (r.ok && r.closed) { renderLogin('Настройка уже завершена.', true, r.wa_lost); return; }
+  renderLogin(r.locked_for ? 'Слишком много неверных кодов, подожди.' : null, false, r.wa_lost);
 })();
 </script>
 </body>
