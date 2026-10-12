@@ -4,3 +4,5 @@ fastapi==0.115.6
 uvicorn[standard]==0.34.0
 anthropic==0.69.0
 httpx==0.28.1
+# AES-GCM и HKDF для хранения пакета активации (activation.py). Колёса есть под python:3.11-slim.
+cryptography==44.0.0

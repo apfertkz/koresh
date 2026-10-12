@@ -18,6 +18,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
+import activation
 import brain
 import config as C
 import iot
@@ -173,6 +174,12 @@ def public_base(request: Request) -> str:
     return f"{proto}://{host}"
 
 
+def server_domain(request: Request) -> str:
+    """Адрес ЭТОГО сервера (хост без схемы и пути): его покажет страница входа на сервере лицензий, чтобы человек подтвердил «это мой сервер»."""
+    from urllib.parse import urlparse
+    return (urlparse(public_base(request)).hostname or "").lower()
+
+
 def webhook_url(request: Request) -> str:
     sec = C.webhook_secret()
     return f"{public_base(request)}/alice/{sec}" if sec else ""
@@ -183,8 +190,8 @@ def _field(name: str, value) -> dict:
 
 
 def build_state(request: Request) -> dict:
-    h = C.household()
-    blocked = C.extra_blocked_names()
+    h = C.household(with_pack=False)       # содержимое пакета (хозяин, комнаты) на страницу не отдаём
+    blocked = C.extra_blocked_names(with_pack=False)
     return {
         "now": _now(),
         "version": C.VERSION,
@@ -207,6 +214,7 @@ def build_state(request: Request) -> dict:
         "memory": "disk" if memory.disk_ok() else "ram",
         "callback": bool(C.env("INSTALL_CALLBACK_URL") and C.env("INSTALL_TOKEN")),
         "tones": list(C.TONES),
+        "license": {"configured": activation.configured(), "active": activation.active()},   # самого пакета здесь нет никогда
     }
 
 
@@ -326,6 +334,30 @@ BRAIN_MESSAGES = {
 }
 
 
+async def _accept_iot_token(tok: str):
+    """Проверить токен умного дома у Яндекса и сохранить. Возвращает (None, ответ-ошибка) или ((summary, persisted), None)."""
+    try:
+        async with httpx.AsyncClient(timeout=8, transport=_TRANSPORT) as c:
+            r = await c.get(f"{iot.IOT}/user/info", headers={"Authorization": f"Bearer {tok}"})
+    except Exception as e:  # noqa: BLE001
+        print(f"setup: токен умного дома: сеть {type(e).__name__}", flush=True)
+        return None, _json_err(502, "net", "Яндекс не ответил. Попробуй ещё раз.")
+    if r.status_code in (401, 403):
+        print("setup: токен умного дома не принят", flush=True)
+        return None, _json_err(400, "rejected", "Яндекс не принял токен: он выдан не под тем аккаунтом, без прав iot:view / iot:control, либо устарел.")
+    if r.status_code != 200:
+        print(f"setup: токен умного дома: Яндекс ответил {r.status_code}", flush=True)
+        return None, _json_err(502, "net", "Яндекс ответил ошибкой. Попробуй ещё раз.")
+    try:
+        summary = devices_summary(iot.public_view(iot.compact_user_info(r.json())))
+    except Exception as e:  # noqa: BLE001
+        print(f"setup: токен умного дома: разбор ответа {type(e).__name__}", flush=True)
+        return None, _json_err(502, "net", "Яндекс прислал странный ответ. Попробуй ещё раз.")
+    persisted = C.save_values({"YANDEX_IOT_TOKEN": tok})
+    iot.reset_cache()
+    return (summary, persisted), None
+
+
 @router.post("/setup/api/iot-token")
 async def iot_token(request: Request):
     _need_auth(request)
@@ -333,26 +365,46 @@ async def iot_token(request: Request):
     tok = clean_iot_token(str(data.get("token") or ""))
     if not tok:
         return _json_err(400, "bad_token", "Это не похоже на токен Яндекса. Нужна длинная строка, которую показала страница Яндекса.")
-    try:
-        async with httpx.AsyncClient(timeout=8, transport=_TRANSPORT) as c:
-            r = await c.get(f"{iot.IOT}/user/info", headers={"Authorization": f"Bearer {tok}"})
-    except Exception as e:  # noqa: BLE001
-        print(f"setup: токен умного дома: сеть {type(e).__name__}", flush=True)
-        return _json_err(502, "net", "Яндекс не ответил. Попробуй ещё раз.")
-    if r.status_code in (401, 403):
-        print("setup: токен умного дома не принят", flush=True)
-        return _json_err(400, "rejected", "Яндекс не принял токен: он выдан не под тем аккаунтом, без прав iot:view / iot:control, либо устарел.")
-    if r.status_code != 200:
-        print(f"setup: токен умного дома: Яндекс ответил {r.status_code}", flush=True)
-        return _json_err(502, "net", "Яндекс ответил ошибкой. Попробуй ещё раз.")
-    try:
-        summary = devices_summary(iot.public_view(iot.compact_user_info(r.json())))
-    except Exception as e:  # noqa: BLE001
-        print(f"setup: токен умного дома: разбор ответа {type(e).__name__}", flush=True)
-        return _json_err(502, "net", "Яндекс прислал странный ответ. Попробуй ещё раз.")
-    persisted = C.save_values({"YANDEX_IOT_TOKEN": tok})
-    iot.reset_cache()
+    ok, err = await _accept_iot_token(tok)
+    if err is not None:
+        return err
+    summary, persisted = ok
     return _json_ok(devices=summary, persisted=persisted, shadowed_by_env=C.source("YANDEX_IOT_TOKEN") == "env")
+
+
+# ---------- код активации: персональный пакет с сервера лицензий ----------
+@router.post("/setup/api/license/start")
+async def license_start(request: Request):
+    """Код -> адрес входа Яндексом (центральный колбэк на сервере лицензий). Идентификатор входа остаётся у нас в оперативке."""
+    _need_auth(request)
+    d = await _body(request)
+    code = re.sub(r"[^A-Za-z0-9\- ]", "", str(d.get("code") or ""))[:40]
+    if not code:
+        return _json_err(400, "bad_code", "Введи код активации.")
+    r = await activation.start_flow(code, server_domain(request))
+    if not r.get("ok"):
+        return _json_err(400 if r.get("error") not in ("net", "not_configured") else 502, r.get("error", "server"), r.get("message", ""))
+    return _json_ok(authorize_url=r["authorize_url"])
+
+
+@router.get("/setup/api/license/status")
+async def license_status(request: Request):
+    """Опрос после того, как человек открыл вход Яндексом. Получили пакет -> он на Volume зашифрованным и в оперативке;
+    токен умного дома проверяется и сохраняется так же, как при ручной вставке."""
+    _need_auth(request)
+    r = await activation.poll_flow()
+    st = r.get("status")
+    if st == "failed":
+        return _json_ok(status="failed", error=r.get("error", ""), message=r.get("message", ""))
+    if st != "ok":
+        return _json_ok(status=st)
+    out = {"status": "ok", "saved": bool(r.get("saved")), "iot": False}
+    tok = clean_iot_token(r.get("iot_token") or "")
+    if tok:
+        ok, err = await _accept_iot_token(tok)
+        if ok is not None:
+            out.update(iot=True, devices=ok[0], persisted=ok[1])
+    return _json_ok(**out)
 
 
 @router.get("/setup/api/devices")

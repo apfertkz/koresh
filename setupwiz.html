@@ -141,6 +141,7 @@ function btn(label, fn, cls) {
   return b;
 }
 function srcTag(src) {
+  if (src === 'pack') return h('span', {class: 'tag src', title: 'Пришло с пакетом активации'}, 'из пакета активации');
   return src === 'env' ? h('span', {class: 'tag src', title: 'Задано в переменных Railway: страница это не перекроет'}, 'из переменных Railway') : null;
 }
 async function copyText(text) {
@@ -269,6 +270,41 @@ function deviceList(d) {
       d.scenarios.map(x => h('li', 0, h('b', 0, x.name || '(без названия)'), h('span', {class: 'tag'}, 'сценарий'),
         x.locked ? h('span', {class: 'tag lock'}, lockLabel) : null))));
 }
+/* код активации (тариф «Настрою сам»): вход Яндексом идёт через центральный колбэк сервера лицензий */
+function licenseBlock() {
+  const L = S.license;
+  if (!L || !L.configured) return null;
+  const code = h('input', {type: 'text', class: 'mono', name: 'koresh-activation-code', autocomplete: 'off', autocapitalize: 'characters', autocorrect: 'off',
+    spellcheck: 'false', placeholder: 'KR-XXXX-XXXX-XXXX', 'aria-label': 'Код активации'});
+  const out = h('div');
+  const tick = async () => {
+    const r = await api('license/status');
+    if (!r.ok || r.status === 'pending' || r.status === 'none') return;
+    stopPoll();
+    if (r.status === 'failed') { out.replaceChildren(note('bad', r.message || 'Не получилось.')); return; }
+    S.license.active = true;
+    if (r.iot) { S.iot = {set: true, source: 'setup'}; devs = r.devices; ui.iot = true; }
+    out.replaceChildren(
+      note('ok', 'Код принят: персональные настройки получены и сохранены зашифрованными.'),
+      r.saved ? null : note('warn', 'Диск недоступен: настройки живут до перезапуска. Проверь Volume на /data.'),
+      r.iot ? deviceList(devs) : note('warn', 'Умный дом не подключился автоматически. Вставь токен вручную ниже.'));
+  };
+  const start = btn('Войти через Яндекс', async () => {
+    out.replaceChildren(note('info', 'Проверяю код…'));
+    const r = await api('license/start', {code: code.value});
+    if (!r.ok) { out.replaceChildren(note('bad', r.message || 'Не получилось.')); return; }
+    out.replaceChildren(
+      note('info', 'Открой вход Яндексом под аккаунтом Станции и нажми «Разрешить». Потом откроется страница «Вы подключаете Кореша к серверу ...» с адресом ЭТОГО сервера: если адрес твой, нажми «Да». Возвращайся сюда: страница продолжит сама.'),
+      ext(r.authorize_url, 'Открыть вход Яндексом'));
+    stopPoll();
+    pollTimer = setInterval(tick, 2000);
+  });
+  return h('div', 0,
+    h('h3', 0, 'Код активации'),
+    L.active ? note('ok', 'Код уже активирован. Можно ввести другой, если нужно.') : null,
+    h('p', 0, 'Код из бота-установщика. Один вход Яндексом: и персональные настройки, и умный дом подключатся сами. Нет кода или не вышло: ручной путь ниже работает как раньше.'),
+    h('label', 0, 'Код'), code, start, out);
+}
 function stepIot() {
   const out = h('div');
   const list = h('div');
@@ -327,6 +363,7 @@ function stepIot() {
   return h('div', 0,
     h('h2', 0, 'Шаг 2. Умный дом'),
     h('p', 0, 'Без этого Кореш только болтает. Токен даёт ему право включать свет и розетки. Права на замки и ворота у него всё равно нет, пока ты сам не включишь их на шаге 4.'),
+    licenseBlock(),
     S.iot.set ? note('ok', 'Токен уже есть ', srcTag(S.iot.source), ' Можно показать устройства или вставить новый токен.') : null,
     S.iot.set ? h('div', 0, show, list) : null,
     main,

@@ -20,6 +20,27 @@ STORED_KEYS = ("YANDEX_IOT_TOKEN", "ASSISTANT_NAME", "TONE", "GENDER", "HOUSEHOL
 SECRET_KEYS = ("YANDEX_IOT_TOKEN", "LOCK_PHRASE")          # значения этих ключей не показываем и не логируем
 _CFG = {"sig": None, "data": None}                        # кэш файла по отпечатку (inode, mtime, размер)
 _MEM_ONLY: dict = {}                                       # копия, если диск недоступен: живёт до перезапуска
+# Слой «пакет активации» (см. activation.py): персональные настройки из сервера лицензий. Живёт ТОЛЬКО в оперативке,
+# на диск открытым не пишется. Приоритет: переменная Railway > пакет > config.json > умолчание.
+PACK_KEYS = ("ASSISTANT_NAME", "TONE", "GENDER")
+_PACK: dict = {}
+
+
+def set_pack(pack: dict) -> None:
+    _PACK.clear()
+    _PACK.update(json.loads(json.dumps(pack)))
+
+
+def clear_pack() -> None:
+    _PACK.clear()
+
+
+def pack() -> dict:
+    return _PACK
+
+
+def pack_active() -> bool:
+    return bool(_PACK)
 
 
 def config_path() -> str:
@@ -63,6 +84,8 @@ def source(name: str) -> str:
     """Откуда берётся значение: env (переменная Railway) | setup (config.json) | default."""
     if (os.environ.get(name) or "").strip():
         return "env"
+    if name in PACK_KEYS and _PACK.get(name):
+        return "pack"
     return "setup" if name in STORED_KEYS and stored(name) else "default"
 
 
@@ -125,6 +148,8 @@ def set_setup_done(done: bool) -> bool:
 
 def env(name: str, default: str = "") -> str:
     v = (os.environ.get(name) or "").strip()
+    if not v and name in PACK_KEYS:
+        v = str(_PACK.get(name) or "").strip()
     if not v and name in STORED_KEYS:
         v = stored(name)
     return v or default.strip()
@@ -177,18 +202,28 @@ def gender() -> str:
     return g if g in GENDERS else "male"
 
 
-def household() -> dict:
+def household(with_pack: bool = True) -> dict:
     """HOUSEHOLD — необязательный JSON. Понимаются ключи:
     owner (как обращаться), people ({имя: кто это}), rooms ({как говорят: как названо в Яндексе}), notes (строка)."""
     raw = env("HOUSEHOLD")
-    if not raw:
-        return {}
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        print("HOUSEHOLD: невалидный JSON, игнорирую", flush=True)
-        return {}
-    return data if isinstance(data, dict) else {}
+    data: dict = {}
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            data = parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            print("HOUSEHOLD: невалидный JSON, игнорирую", flush=True)
+    if not with_pack or (os.environ.get("HOUSEHOLD") or "").strip() or not _PACK:
+        return data
+    data = dict(data)                     # пакет перекрывает config.json, но не переменную Railway
+    for k in ("owner", "people", "rooms"):
+        if _PACK.get(k):
+            data[k] = _PACK[k]
+    return data
+
+
+def pack_notes() -> str:
+    return str(_PACK.get("notes") or "").strip()
 
 
 def webhook_secret() -> str:
@@ -222,8 +257,11 @@ def lock_phrase() -> str:
     return env("LOCK_PHRASE")
 
 
-def extra_blocked_names() -> list[str]:
-    return [x.strip().lower() for x in env("BLOCKED_NAMES").split(",") if x.strip()]
+def extra_blocked_names(with_pack: bool = True) -> list[str]:
+    own = [x.strip().lower() for x in env("BLOCKED_NAMES").split(",") if x.strip()]
+    if not with_pack:
+        return own
+    return own + [x for x in (_PACK.get("blocked") or []) if x not in own]
 
 
 def memory_dir() -> str:

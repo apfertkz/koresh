@@ -2011,6 +2011,357 @@ else:
         check("19s. шаг 6 подсказывает активационное имя, а не просто имя", "запусти навык бро дома" in _text(chk6["tree"]), _text(chk6["tree"])[:200])
 
 
+# ================= 20. Активация по коду: персональный пакет (сервер лицензий замокан) =================
+import activation  # noqa: E402
+import contextlib  # noqa: E402
+import io  # noqa: E402
+import stat  # noqa: E402
+
+_ENV20 = ("YANDEX_IOT_TOKEN", "SETUP_CODE", "MEMORY_DIR", "ASSISTANT_NAME", "TONE", "GENDER", "HOUSEHOLD", "BLOCKED_NAMES",
+          "WEBHOOK_SECRET", "USAGE_FILE", "ANTHROPIC_API_KEY")
+_SAVED20 = {k: os.environ.get(k) for k in _ENV20}
+_DIR20 = tempfile.mkdtemp()
+os.environ["MEMORY_DIR"] = _DIR20
+os.environ["USAGE_FILE"] = os.path.join(_DIR20, "usage.json")
+for _k in ("YANDEX_IOT_TOKEN", "ASSISTANT_NAME", "TONE", "GENDER", "HOUSEHOLD", "BLOCKED_NAMES"):
+    os.environ.pop(_k, None)
+os.environ["SETUP_CODE"] = "act-setup-code-20"
+os.environ["WEBHOOK_SECRET"] = "act-hook-secret-20"
+os.environ["ANTHROPIC_API_KEY"] = "sk-test-act"
+activation.reset_for_tests()
+
+SECRETS20 = ["Мурзик", "Алексей", "Алматы", "Борис"]       # поля пакета: должны быть только в зашифрованном виде и в оперативке
+PACK20 = {"schema": 1, "version": 1, "ASSISTANT_NAME": "Борис", "TONE": "derzkiy_mat", "GENDER": "male", "owner": "Алексей",
+          "devices": ["light", "locks"], "city": "Алматы", "people": {}, "rooms": {}, "blocked": [],
+          "notes": "Город хозяина: Алматы. В доме есть: свет, замок или ворота. От хозяина: у нас кот Мурзик."}
+GOOD_CODE = "KR-ABCD-EFGH-JKMN"
+YID_A, YID_B = "1000000001", "2000000002"
+IOT_TOK = "test-iot-token"
+
+
+class FakeLicense:
+    """Повторяет протокол сервиса лицензий: start (адрес сервера клиента + секрет обмена) -> ссылка входа на сам сервис лицензий ->
+    (браузер: вход Яндексом, «Это ваш сервер?» -> Да = complete) -> exchange только с секретом; refresh по токену обновления."""
+
+    def __init__(self):
+        self.bound = None
+        self.installs = []
+        self.handles = {}                       # handle -> {install_id, state, yid, secret, domain}
+        self.login_prefix = None                # подмена адреса ссылки входа (проверка: клиент не пойдёт на чужой адрес)
+        self.version = 1
+        self.pack = dict(PACK20)
+        self.revoked = False
+        self.down = False
+        self.requests = []
+        self.tokens = {}                        # install_id -> токен обновления
+
+    def complete(self, handle, yid, now=None):
+        h = self.handles[handle]
+        if self.bound and self.bound != yid:
+            h["state"] = ("fail", "wrong_account", "Этот код уже привязан к другому аккаунту Яндекса. Напишите в поддержку.")
+        elif h["install_id"] not in self.installs and len(self.installs) >= 3:
+            h["state"] = ("fail", "install_limit", "Для этого кода исчерпан лимит переустановок. Напишите в поддержку.")
+        else:
+            self.bound = yid
+            if h["install_id"] not in self.installs:
+                self.installs.append(h["install_id"])
+            h["state"] = ("done", yid)
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        if self.down:
+            raise httpx.ConnectError("сервер лицензий лежит")
+        path = request.url.path
+        body = json.loads(request.content) if request.content else {}
+        self.requests.append((path, body, dict(request.headers)))
+        if path == "/v1/install/start":
+            if body.get("code") != GOOD_CODE:
+                return httpx.Response(404, json={"ok": False, "error": "bad_code", "message": "Код не подошёл. Проверьте, что вы ввели его без ошибок."})
+            if not body.get("server_domain") or len(body.get("exchange_secret") or "") < 32:
+                return httpx.Response(400, json={"ok": False, "error": "bad_domain", "message": "нужен адрес сервера и секрет обмена"})
+            hd = "h" * 63 + str(len(self.handles))
+            self.handles[hd] = {"install_id": body["install_id"], "state": ("wait",),
+                                "secret": body["exchange_secret"], "domain": body["server_domain"]}
+            prefix = self.login_prefix or "https://license.example.test"
+            return httpx.Response(200, json={"ok": True, "handle": hd, "expires_in": 600, "login_url": prefix + "/yandex/start?handle=" + hd})
+        if path == "/v1/install/exchange":
+            h = self.handles.get(body.get("handle"))
+            if not h:
+                return httpx.Response(404, json={"ok": False, "error": "bad_state", "message": "ссылка недействительна"})
+            if body.get("exchange_secret") != h["secret"] or body.get("install_id") != h["install_id"]:
+                return httpx.Response(403, json={"ok": False, "error": "bad_install", "message": "Это не ваша установка."})
+            st = h["state"]
+            if st[0] == "wait":
+                return httpx.Response(202, json={"ok": True, "status": "pending"})
+            if st[0] == "fail":
+                return httpx.Response(403, json={"ok": False, "error": st[1], "message": st[2]})
+            if st[0] == "used":
+                return httpx.Response(410, json={"ok": False, "error": "used", "message": "ссылка использована"})
+            h["state"] = ("used",)
+            self.tokens[h["install_id"]] = "rt-" + "r" * 30 + h["install_id"][-6:]
+            return httpx.Response(200, json={"ok": True, "status": "ok", "pack": self.pack, "pack_version": self.version,
+                                             "seed": "seed-" + "s" * 40, "yandex_id": st[1], "refresh_token": self.tokens[h["install_id"]],
+                                             "yandex_token": IOT_TOK})
+        if path == "/v1/pack/refresh":
+            if request.headers.get("authorization") != f"Bearer {self.tokens.get(body.get('install_id'))}":
+                return httpx.Response(401, json={"ok": False, "error": "unauthorized"})
+            if self.revoked:
+                return httpx.Response(410, json={"ok": False, "status": "revoked"})
+            if self.version <= body.get("since", 0):
+                return httpx.Response(200, json={"ok": True, "status": "same", "pack_version": self.version})
+            return httpx.Response(200, json={"ok": True, "status": "update", "pack": self.pack, "pack_version": self.version})
+        return httpx.Response(404)
+
+
+def _logged_in(c):
+    r = c.post("/setup/api/login", json={"code": os.environ["SETUP_CODE"], "reopen": True})
+    assert r.status_code == 200, r.text
+
+
+def _read_all_files(d):
+    out = {}
+    for f in Path(d).iterdir():
+        if f.is_file():
+            out[f.name] = f.read_bytes()
+    return out
+
+
+BASE_PROMPT20 = prompts.system_prompt()
+LIC = FakeLicense()
+activation.LICENSE_URL = "https://license.example.test"
+activation._TRANSPORT = httpx.MockTransport(LIC)
+setupwiz._TRANSPORT = httpx.MockTransport(yandex_handler)
+setupwiz.reset_for_tests()
+tc20 = _TC(main.app)
+_logged_in(tc20)
+LOG20 = io.StringIO()
+
+# --- 1. полный путь: код -> вход Яндексом -> пакет на Volume ---
+with contextlib.redirect_stdout(LOG20):
+    r_bad = tc20.post("/setup/api/license/start", json={"code": "KR-WRONG-WRONG-WRNG"})
+    pack_after_bad = C.pack_active()
+    r_start = tc20.post("/setup/api/license/start", json={"code": GOOD_CODE})
+    hd20 = next(iter(LIC.handles))
+    r_pend = tc20.get("/setup/api/license/status")
+    pack_while_pending = C.pack_active()
+    LIC.complete(hd20, YID_A)
+    r_done = tc20.get("/setup/api/license/status")
+    r_again = tc20.get("/setup/api/license/status")
+check("20a. неверный код: ответ с понятным текстом, пакета нет", r_bad.status_code == 400 and "не подошёл" in r_bad.json()["message"] and not pack_after_bad)
+check("20b. верный код: ссылка входа ведёт на сервер лицензий (там кука и «Это ваш сервер?»), handle отдельно клиенту не отдаётся",
+      r_start.status_code == 200 and r_start.json()["authorize_url"] == "https://license.example.test/yandex/start?handle=" + hd20
+      and hd20 not in r_start.text.replace(r_start.json()["authorize_url"], ""))
+check("20c. пока человек не вошёл — pending, пакета нет", r_pend.json()["status"] == "pending" and not pack_while_pending)
+check("20d. после входа: пакет принят, токен умного дома проверен и сохранён, устройства видны",
+      r_done.json()["status"] == "ok" and r_done.json()["saved"] is True and r_done.json()["iot"] is True
+      and r_done.json()["devices"]["count"] == 4 and C.stored("YANDEX_IOT_TOKEN") == IOT_TOK, r_done.text[:200])
+check("20e. обмен одноразовый: повторный опрос ничего не отдаёт", r_again.json()["status"] == "none")
+files20 = _read_all_files(_DIR20)
+check("20f. на Volume лежат pack.enc и license.json с правами 600",
+      {"pack.enc", "license.json", "config.json"} <= set(files20)
+      and all(stat.S_IMODE(os.stat(os.path.join(_DIR20, n)).st_mode) == 0o600 for n in ("pack.enc", "license.json", "config.json")))
+check("20g. pack.enc зашифрован: ни одно поле пакета открытым текстом не найдено",
+      not any(s.encode() in files20["pack.enc"] for s in SECRETS20) and files20["pack.enc"].startswith(b"KP1"))
+check("20h. в license.json и config.json полей пакета нет",
+      not any(s.encode() in files20["license.json"] + files20["config.json"] for s in SECRETS20))
+check("20i. в Variables (os.environ) полей пакета нет", not any(s in " ".join(os.environ.values()) for s in SECRETS20))
+check("20j. в журнале (stdout всего потока активации) полей пакета, кода, токенов нет",
+      not any(s in LOG20.getvalue() for s in SECRETS20 + [GOOD_CODE, IOT_TOK, "seed-", "rt-rrrr", hd20]), LOG20.getvalue()[:300])
+leak_sources = {
+    "health": tc20.get("/health").text, "state": tc20.get("/setup/api/state").text,
+    "license_start": r_start.text, "license_status": r_done.text + r_pend.text,
+}
+check("20k. /health, /setup/api/state и ответы активации не содержат заметок, города, хозяина, кода и ключей",
+      not any(s in t for t in leak_sources.values() for s in ["Мурзик", "Алексей", "Алматы", GOOD_CODE, "seed-", "rt-rrrr"]),
+      str({k: [s for s in ["Мурзик", "Алексей", "Алматы"] if s in t] for k, t in leak_sources.items()}))
+check("20l. /health при пакете не светит тон и род", "tone" not in tc20.get("/health").json() and "gender" not in tc20.get("/health").json())
+sent_bodies = [b for p, b, h in LIC.requests if p != "/v1/pack/refresh"]
+check("20m. клиент шлёт серверу только код/handle/install_id, адрес сервера и секрет обмена: никакого Yandex ID от клиента",
+      all(set(b) <= {"code", "install_id", "handle", "server_domain", "exchange_secret"} for b in sent_bodies) and all(YID_A not in json.dumps(b) for b in sent_bodies))
+_starts20 = [b for p, b, h in LIC.requests if p == "/v1/install/start" and b.get("code") == GOOD_CODE]
+_exch20 = [b for p, b, h in LIC.requests if p == "/v1/install/exchange"]
+SECRET20 = _starts20[0]["exchange_secret"]
+check("20ma. при старте уходят адрес ЭТОГО сервера и случайный секрет обмена (>=32 символов); обмен идёт с тем же секретом",
+      _starts20[0]["server_domain"] == "testserver" and len(SECRET20) >= 32 and all(b.get("exchange_secret") == SECRET20 for b in _exch20) and len(_exch20) >= 2)
+check("20mb. секрет обмена нигде не светится: не в ссылке входа, не в ответах /setup, не в /health, не в журнале, не на диске",
+      SECRET20 not in r_start.text + r_done.text + r_pend.text + tc20.get("/health").text + tc20.get("/setup/api/state").text
+      and SECRET20 not in LOG20.getvalue() and not any(SECRET20.encode() in b for b in files20.values()))
+
+# --- 2. пакет работает в промпте и в настоящем запросе к мозгу ---
+p20 = prompts.system_prompt()
+check("20n. пакет в промпте: имя, хозяин, заметки; тон «с матом» из пакета", "Борис" in p20 and "Алексей" in p20 and "Мурзик" in p20 and "мат" in p20.lower())
+check("20o. промпт стабилен: два вызова подряд побайтно равны", prompts.system_prompt() == p20)
+check("20p. источник значений = pack, пока нет переменной Railway",
+      C.source("ASSISTANT_NAME") == "pack" and C.assistant_name() == "Борис" and C.tone() == "derzkiy_mat")
+os.environ["ASSISTANT_NAME"] = "Гоша"
+check("20q. переменная Railway главнее пакета", C.assistant_name() == "Гоша" and C.source("ASSISTANT_NAME") == "env")
+os.environ.pop("ASSISTANT_NAME")
+C.save_values({"ASSISTANT_NAME": "Конфиг", "TONE": "vezhlivyy"})
+check("20r. пакет главнее config.json", C.assistant_name() == "Борис" and C.tone() == "derzkiy_mat")
+C.save_values({"ASSISTANT_NAME": None, "TONE": None})
+SYS20 = []
+brain._create = stub("ок", log=SYS20)
+fresh("act-u1")
+run(say("act-u1", "привет"))
+sys_sent = json.dumps(SYS20[0].get("system"), ensure_ascii=False) if SYS20 else ""
+check("20s. пакет доезжает до Anthropic: в system реального запроса есть заметки и имя", "Мурзик" in sys_sent and "Борис" in sys_sent)
+
+# --- 3. нет пакета / битый пакет -> обычный публичный Кореш ---
+activation.reset_for_tests()
+check("20t. без пакета промпт побайтно как раньше", prompts.system_prompt() == BASE_PROMPT20)
+check("20u. старт с диска: load() достаёт пакет в оперативку", activation.load() is True and "Мурзик" in prompts.system_prompt())
+blob = files20["pack.enc"]
+(Path(_DIR20) / "pack.enc").write_bytes(blob[:40])
+activation.reset_for_tests()
+check("20v. обрезанный pack.enc -> пакета нет, промпт публичный, без падения", activation.load() is False and prompts.system_prompt() == BASE_PROMPT20)
+(Path(_DIR20) / "pack.enc").write_bytes(b"KP1" + os.urandom(80))
+check("20w. мусор в pack.enc -> то же самое", activation.load() is False and prompts.system_prompt() == BASE_PROMPT20)
+(Path(_DIR20) / "pack.enc").write_bytes(blob)
+st_ok = json.loads((Path(_DIR20) / "license.json").read_text(encoding="utf-8"))
+for k, v in (("yandex_id", YID_B), ("install_id", "ki-" + "z" * 32), ("seed", "seed-wrong")):
+    (Path(_DIR20) / "license.json").write_text(json.dumps({**st_ok, k: v}), encoding="utf-8")
+    activation.reset_for_tests()
+    check(f"20x-{k}. ключ привязан: подмена {k} -> расшифровки нет", activation.load() is False and "Мурзик" not in prompts.system_prompt())
+(Path(_DIR20) / "license.json").write_text(json.dumps(st_ok), encoding="utf-8")
+(Path(_DIR20) / "pack.enc").unlink()
+activation.reset_for_tests()
+check("20y. нет pack.enc -> публичный Кореш и вебхук отвечает",
+      activation.load() is False and run(say("act-u2", "привет")) != "")
+(Path(_DIR20) / "pack.enc").write_bytes(blob)
+
+# --- 4. отказы сервера ---
+LIC2 = FakeLicense()
+activation._TRANSPORT = httpx.MockTransport(LIC2)
+setupwiz.reset_for_tests()
+tc21 = _TC(main.app)
+_logged_in(tc21)
+
+
+def _flow(client, lic, yid, install):
+    """Отдельная установка = отдельный Volume (свой каталог и свой install_id)."""
+    d = tempfile.mkdtemp()
+    os.environ["MEMORY_DIR"] = d
+    activation.reset_for_tests()
+    (Path(d) / "license.json").write_text(json.dumps({"install_id": install}), encoding="utf-8")
+    client.post("/setup/api/license/start", json={"code": GOOD_CODE})
+    hd = list(lic.handles)[-1]
+    lic.complete(hd, yid)
+    return client.get("/setup/api/license/status").json(), d
+
+
+r1, d2 = _flow(tc21, LIC2, YID_A, "ki-" + "1" * 32)
+check("20z1. первый аккаунт: ок", r1["status"] == "ok")
+r2, _ = _flow(tc21, LIC2, YID_B, "ki-" + "2" * 32)
+check("20z2. чужой аккаунт: отказ с текстом, пакет не обновился", r2["status"] == "failed" and r2["error"] == "wrong_account" and "поддержк" in r2["message"])
+_flow(tc21, LIC2, YID_A, "ki-" + "2" * 32)
+_flow(tc21, LIC2, YID_A, "ki-" + "3" * 32)
+r4, _ = _flow(tc21, LIC2, YID_A, "ki-" + "4" * 32)
+check("20z3. четвёртая установка: «напишите в поддержку»", r4["status"] == "failed" and r4["error"] == "install_limit" and "поддержк" in r4["message"])
+
+# --- 5. сервер лицензий лёг (дальше работаем с первой установкой, её каталог d2) ---
+os.environ["MEMORY_DIR"] = d2
+LIC2.down = True
+activation.reset_for_tests()
+check("20z4. сервер лежит, пакет на диске: Кореш стартует с пакетом", activation.load() is True and "Мурзик" in prompts.system_prompt())
+check("20z5. обновление при недоступном сервере молчит (fail), пакет цел", run(activation.refresh_once()) == "fail" and "Мурзик" in prompts.system_prompt())
+rs = tc21.post("/setup/api/license/start", json={"code": GOOD_CODE})
+check("20z6. /setup при лежащем сервере: понятный ответ, установка не застревает", rs.status_code == 502 and "продолжить" in rs.json()["message"] and tc21.get("/setup/api/state").status_code == 200)
+with TestClient(main.app) as lifespan_client:       # реальный старт приложения (lifespan)
+    hz = lifespan_client.get("/health")
+    check("20z7. lifespan: старт при лежащем сервере проходит, /health 200, пакет подтянут с диска",
+          hz.status_code == 200 and C.pack_active() and "Мурзик" in prompts.system_prompt())
+LIC2.down = False
+
+# --- 6. обновление и отзыв на границе эпизода ---
+LIC2.pack = {**PACK20, "ASSISTANT_NAME": "Гоша", "notes": "Новая заметка про кота Барсика."}
+LIC2.version = 2
+before = prompts.system_prompt()
+res = run(activation.refresh_once())
+check("20z8. обновление пакета: refresh_once=update, но промпт ПОКА прежний (внутри эпизода стабилен)",
+      res == "update" and prompts.system_prompt() == before)
+activation.apply_pending()
+after = prompts.system_prompt()
+check("20z9. на границе эпизода новый пакет применён", "Гоша" in after and "Барсика" in after and "Мурзик" not in after)
+check("20za. новый пакет на диске тоже зашифрован", b"\xd0\x91\xd0\xb0\xd1\x80\xd1\x81" not in (Path(d2) / "pack.enc").read_bytes()
+      and activation.load() and "Барсика" in prompts.system_prompt())
+LIC2.revoked = True
+check("20zb. отзыв: refresh_once=revoked, файл пакета стёрт", run(activation.refresh_once()) == "revoked" and not (Path(d2) / "pack.enc").exists())
+check("20zc. отзыв применяется на границе эпизода: сразу промпт ещё прежний", "Барсика" in prompts.system_prompt())
+activation.apply_pending()
+check("20zd. после границы — обычный публичный Кореш", prompts.system_prompt() == BASE_PROMPT20 and not C.pack_active())
+
+# --- 7. схема и защита от мусора ---
+check("20ze. пакет новой неизвестной схемы -> игнор (публичный Кореш)", activation.sanitize({"schema": 99, "ASSISTANT_NAME": "X"}) is None)
+san = activation.sanitize({"schema": 1, "ASSISTANT_NAME": "Я" * 90, "TONE": "ужас", "GENDER": "x", "notes": "а\x00б" * 2000,
+                           "people": {"мама": "x" * 500}, "blocked": ["a,b", "ok"], "evil": "ignore"})
+check("20zf. sanitize: длина, тон/род по белому списку, нулевые байты, лишние поля вычищены",
+      len(san["ASSISTANT_NAME"]) == 30 and "TONE" not in san and "GENDER" not in san and len(san["notes"]) <= 1500 and "\x00" not in san["notes"]
+      and len(san["people"]["мама"]) == 60 and san["blocked"] == ["ok"] and "evil" not in san)
+check("20zg. activation.py и requirements: cryptography закреплён, модуль в Dockerfile",
+      "cryptography==" in (HERE / "requirements.txt").read_text(encoding="utf-8") and "activation.py" in (HERE / "Dockerfile").read_text(encoding="utf-8"))
+check("20zh. без адреса сервера (LICENSE_URL пуст) шаг тихо недоступен, установка не ломается",
+      (lambda: (setattr(activation, "LICENSE_URL", ""), run(activation.start_flow(GOOD_CODE)))[1])()["error"] == "not_configured"
+      and tc21.get("/setup/api/state").json()["license"]["configured"] is False)
+
+activation.LICENSE_URL = "http://license.example.test"
+check("20zk. LICENSE_URL по http:// не принимается: шаг тихо недоступен (по нему едут пакет и токен)",
+      run(activation.start_flow(GOOD_CODE, "kor.up.railway.app"))["error"] == "not_configured" and activation.configured() is False)
+activation.LICENSE_URL = "https://license.example.test"
+LIC3 = FakeLicense()
+activation._TRANSPORT = httpx.MockTransport(LIC3)
+activation.reset_for_tests()
+check("20zl. без адреса сервера старт не уходит (понятная ошибка), сеть не трогается",
+      run(activation.start_flow(GOOD_CODE, ""))["error"] == "bad_domain" and not LIC3.requests)
+LIC3.login_prefix = "https://evil.example"
+check("20zm. сервер ответил ссылкой входа на ЧУЖОЙ адрес: клиент её не показывает",
+      run(activation.start_flow(GOOD_CODE, "kor.up.railway.app"))["error"] == "server" and not activation._FLOW["handle"])
+LIC3.login_prefix = None
+_okf = run(activation.start_flow(GOOD_CODE, "kor.up.railway.app"))
+check("20zn. честный старт: ссылка на сервер лицензий, секрет в оперативке (не на диске)",
+      _okf["ok"] and _okf["authorize_url"].startswith("https://license.example.test/yandex/start?handle=") and len(activation._FLOW["secret"]) >= 32
+      and activation._FLOW["secret"].encode() not in b"".join(_read_all_files(os.environ["MEMORY_DIR"]).values()))
+activation._FLOW["secret"] = "x" * 40            # секрет не тот (как будто handle украли без секрета)
+_bad = run(activation.poll_flow())
+check("20zo. обмен с чужим секретом: отказ, пакет не сохранён, поток сброшен",
+      _bad["status"] == "failed" and not C.pack_active() and not activation._FLOW["handle"])
+activation.LICENSE_URL = ""
+activation._TRANSPORT = None
+
+# --- страница: блок «Код активации» виден только когда сервер лицензий подключён ---
+if shutil.which("node"):
+    _s_on = {**_S(cid="0123456789abcdef0123456789abcdef"), "license": {"configured": True, "active": False}}
+    _s_off = {**_S(cid="0123456789abcdef0123456789abcdef"), "license": {"configured": False, "active": False}}
+    _jsf20 = Path(tempfile.mkdtemp()) / "dom.js"
+    _jsf20.write_text(DOM_JS, encoding="utf-8")
+    _p20 = subprocess.run(["node", str(_jsf20), str(HERE / "setupwiz.html"), json.dumps([{"fn": "stepIot", "S": _s_on}, {"fn": "stepIot", "S": _s_off}], ensure_ascii=False)],
+                          capture_output=True, text=True, timeout=60)
+    _ok20 = _p20.returncode == 0 and _p20.stdout.strip().startswith("[")
+    if _ok20:
+        _on, _off = json.loads(_p20.stdout.strip().splitlines()[-1])
+        _code_in = [n for n in _nodes(_on["tree"], "input") if n["a"].get("placeholder") == "KR-XXXX-XXXX-XXXX"]
+        check("20zi. страница: блок «Код активации» с полем кода и кнопкой «Войти через Яндекс», ручной путь остался",
+              len(_code_in) == 1 and "Код активации" in _text(_on["tree"]) and "Войти через Яндекс" in _text(_on["tree"])
+              and "Проверить и сохранить" in _text(_on["tree"]))
+        check("20zj. страница: без подключённого сервера лицензий блока нет",
+              "Код активации" not in _text(_off["tree"]) and not [n for n in _nodes(_off["tree"], "input") if "KR-" in n["a"].get("placeholder", "")])
+    else:
+        check("20zi. страница с блоком активации отрисовывается в node", False, (_p20.stderr or _p20.stdout)[:300])
+
+# --- уборка: окружение и состояние как до секции ---
+activation.LICENSE_URL = ""
+activation._TRANSPORT = None
+setupwiz._TRANSPORT = None
+activation.reset_for_tests()
+setupwiz.reset_for_tests()
+for _k, _v in _SAVED20.items():
+    if _v is None:
+        os.environ.pop(_k, None)
+    else:
+        os.environ[_k] = _v
+brain._create = _boom_create
+main.STATE.pop("act-u1", None)
+main.STATE.pop("act-u2", None)
+
+
 # ================= 14. Dockerfile копирует каждый модуль (новый файл не должен выпасть из образа) =================
 _copy = next(l for l in (HERE / "Dockerfile").read_text(encoding="utf-8").splitlines() if l.startswith("COPY ") and ".py" in l)
 _mods = {f.name for f in HERE.glob("*.py") if f.name != "selftest.py"}

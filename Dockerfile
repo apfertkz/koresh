@@ -7,7 +7,7 @@ RUN useradd -m -u 1000 app
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY config.py memory.py usage.py iot.py prompts.py honesty.py tts.py history.py summarize.py brain.py setupwiz.py setupwiz.html main.py ./
+COPY config.py activation.py memory.py usage.py iot.py prompts.py honesty.py tts.py history.py summarize.py brain.py setupwiz.py setupwiz.html main.py ./
 # Долгая память: MEMORY_DIR. На Railway сюда монтируется Volume (mount path /data); без Volume каталог просто
 # пустой и живёт до перезапуска. Volume монтируется от root: на Railway нужна переменная RAILWAY_RUN_UID=0 (см. SETUP.md).
 RUN mkdir -p /data && chown app:app /data

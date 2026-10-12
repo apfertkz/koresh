@@ -6,10 +6,12 @@
 import asyncio
 import hmac
 import re
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 
 from fastapi import FastAPI, HTTPException, Request
 
+import activation
 import brain
 import config as C
 import history
@@ -20,7 +22,18 @@ import summarize
 import tts
 import usage
 
-app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+@asynccontextmanager
+async def lifespan(_app):
+    """Старт: персональный пакет с Volume -> в оперативку (нет/битый -> обычный Кореш); обновление пакета раз в сутки, тихо."""
+    activation.load()
+    task = asyncio.create_task(activation.refresh_loop())
+    try:
+        yield
+    finally:
+        task.cancel()
+
+
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 app.include_router(setupwiz.router)         # страница настройки /setup (выключена, пока не задан SETUP_CODE)
 
 @dataclass
@@ -72,6 +85,7 @@ def begin_turn(st: UserState, p: str) -> int:
         close_sync(st, store)
         print("history: новый эпизод (эпизод переполнен)", flush=True)
     if not st.dialog:                    # начало эпизода: единственное место, где память попадает в разговор
+        activation.apply_pending()       # и где применяется обновлённый пакет активации (промпт внутри эпизода стабилен)
         st.recap = store.render_summaries()
         st.dialog = history.fresh_episode(store.render_block())
     st.dialog.append({"role": "user", "content": p})
@@ -92,6 +106,7 @@ async def close_episode(st: UserState, gen: int) -> None:
     if text:
         store.add_episode(text)
     store.episode_closed()
+    activation.apply_pending()           # граница эпизода: обновлённый пакет активации применяется здесь
     st.recap = store.render_summaries()
     st.dialog = history.fresh_episode(store.render_block())
     print(f"history: эпизод закрыт в фоне, пересказ {len(text)} симв.", flush=True)
@@ -262,7 +277,10 @@ async def alice_webhook(secret: str, request: Request):
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "version": C.VERSION, "tone": C.tone(), "gender": C.gender(), "model": C.model(), "effort": C.effort(),
-            "locks": C.allow_locks() and bool(C.lock_phrase()),
-            "iot": bool(C.iot_token()), "tokens_today": usage.used(),
-            "memory": "disk" if memory.disk_ok() else "ram"}
+    out = {"ok": True, "version": C.VERSION, "tone": C.tone(), "gender": C.gender(), "model": C.model(), "effort": C.effort(),
+           "locks": C.allow_locks() and bool(C.lock_phrase()),
+           "iot": bool(C.iot_token()), "tokens_today": usage.used(),
+           "memory": "disk" if memory.disk_ok() else "ram"}
+    if C.pack_active():                    # персональное (тон, род) наружу не светим
+        out.pop("tone"), out.pop("gender")
+    return out
