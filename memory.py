@@ -70,12 +70,31 @@ def looks_secret(text: str) -> bool:
                 or LONG_DIGITS.search(text) or TOKEN_LIKE.search(text))
 
 
+# ---------- утверждения о собственном характере: в память не пишутся ----------
+# «мат не включается», «я вежливый», «у меня нет мата»: характер задаёт блок тона в промпте, а не память. Запись, сделанная
+# при одном тоне, после смены тона на /setup перебивает новый (инцидент 15.10: «а мат у меня не включается, ты же знаешь»).
+_SELF_TOPIC = re.compile(r"\bмат(?:а|у|ом|е|ы|ов)?\b|\bматерн\w*|\bматер(?:ить|ись|юсь|ишься|ится|имся|ятся|ился|илась)\b"
+                         r"|\bруга(?:ть|ться|юсь|ешься|ется|ются)\b|\bругн\w+|\bвежлив\w*|\bдерзк\w*|\bгрубост\w*"
+                         r"|\bмой\s+(?:характер|тон)\w*|\bтон\w*\s+общени\w*", re.I)
+_SELF_CUE = re.compile(r"не\s+вкл\w*|отключ\w*|выключ\w*|включ[её]н\w*|запрещ\w*|не\s+разреш\w*|не\s+могу|не\s+буду|не\s+умею"
+                       r"|не\s+(?:матер|руга)\w*|без\s+мата|\bнет\b|настро[йе]к\w*|режим\w*|ты\s+же\s+знаешь", re.I)
+
+
+def is_character_claim(text: str) -> bool:
+    return bool(_SELF_TOPIC.search(text or "") and _SELF_CUE.search(text or ""))
+
+
+def strip_character_claims(text: str) -> str:
+    return "\n".join(ln for ln in (text or "").splitlines() if not is_character_claim(ln))
+
+
 def scrub_summary(text: str) -> str:
-    """Пересказ построчно: строка с секретом выбрасывается целиком, остальное режется по потолкам."""
+    """Пересказ построчно: строка с секретом или с утверждением о собственном характере выбрасывается целиком,
+    остальное режется по потолкам."""
     lines = []
     for ln in (text or "").splitlines():
         ln = " ".join(ln.split())
-        if ln and not looks_secret(ln):
+        if ln and not looks_secret(ln) and not is_character_claim(ln):
             lines.append(ln)
     lines = lines[-SUMMARY_LINES:] if len(lines) > SUMMARY_LINES else lines
     out = "\n".join(lines)
@@ -131,6 +150,7 @@ class Store:
         # не хранится: что просили забыть в текущем эпизоде -> пересказ этого эпизода не должен это вернуть
         self.forgotten: list[str] = []
         self.wiped = False
+        self.char = ""                     # отпечаток характера (config.character_sig), с которым эта память последний раз показывалась модели
         self._load()
 
     @property
@@ -160,13 +180,15 @@ class Store:
         self.episodes = [e for e in d.get("episodes", []) if isinstance(e, dict) and isinstance(e.get("text"), str)]
         self.archive = str(d.get("archive", ""))[-ARCHIVE_CHARS:]
         self.open = str(d.get("open", ""))
+        self.char = str(d.get("char", ""))
         if self.open.strip():                       # прошлый процесс умер посреди эпизода -> это тоже разговор
             self.add_episode(self.open, save=False)
             self.open = ""
             self.save()
 
     def save(self) -> bool:
-        data = {"v": 1, "notes": self.notes, "episodes": self.episodes, "archive": self.archive, "open": self.open}
+        data = {"v": 1, "notes": self.notes, "episodes": self.episodes, "archive": self.archive, "open": self.open,
+                "char": self.char}
         try:
             atomic_write(self.path, json.dumps(data, ensure_ascii=False))
             _log_disk("disk", True)
@@ -184,6 +206,9 @@ class Store:
         if looks_secret(fact):
             return "refused", ("refused: это похоже на пароль, код, номер карты или секрет, такое не запоминаю. "
                                "Скажи хозяину, что секреты ты не хранишь, лучше с шуткой.")
+        if is_character_claim(fact):
+            return "refused", ("refused: настройки твоего характера (тон, мат, имя, род) в память не пишутся: их задаёт хозяин на "
+                               "странице настройки, они всегда видны тебе в начале разговора и могут смениться. Не записывай.")
         fact = fact[:NOTE_CHARS].rstrip()
         nf = _norm(fact)
         for n in self.notes:
@@ -242,6 +267,25 @@ class Store:
         self.archive = clean(self.archive)
         self.open = clean(self.open)
         return n
+
+    def apply_character(self, sig: str) -> bool:
+        """Вызывать перед показом памяти модели. Характер (имя|тон|род) сменился с прошлого раза -> стираем из заметок и
+        пересказов утверждения о прежнем характере и возвращаем True: пора начинать новый эпизод. Первый вызов на
+        старом файле без отпечатка тоже чистит (память могла быть отравлена до этого исправления)."""
+        if self.char == sig:
+            return False
+        self.char = sig
+        for n in self.notes:
+            if is_character_claim(n["t"]):
+                n["t"] = ""
+        self.notes = [n for n in self.notes if n["t"]]
+        for e in self.episodes:
+            e["text"] = strip_character_claims(e["text"])
+        self.episodes = [e for e in self.episodes if e["text"].strip()]
+        self.archive = strip_character_claims(self.archive)
+        self.open = strip_character_claims(self.open)
+        self.save()
+        return True
 
     # --- пересказы ---
     def episode_filter(self, text: str) -> str:

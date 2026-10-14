@@ -93,6 +93,9 @@ def begin_turn(st: UserState, p: str) -> int:
     store = memory.store_for(st.uid)
     history.trim_tail(st.dialog)
     st.gen += 1
+    if store.apply_character(C.character_sig()) and st.dialog:      # сменили имя/тон/род на /setup: новый эпизод сразу, не после тишины
+        close_sync(st, store)
+        print("history: сменился характер (имя/тон/род) -> новый эпизод", flush=True)
     if store.wiped:                      # «забудь всё»: старая история в оперативке тоже не должна пережить просьбу
         st.dialog = []
         store.episode_closed()
@@ -102,6 +105,7 @@ def begin_turn(st: UserState, p: str) -> int:
         print("history: новый эпизод (эпизод переполнен)", flush=True)
     if not st.dialog:                    # начало эпизода: единственное место, где память попадает в разговор
         activation.apply_pending()       # и где применяется обновлённый пакет активации (промпт внутри эпизода стабилен)
+        store.apply_character(C.character_sig())     # пакет мог сменить тон: старые утверждения о характере в память не несём
         st.recap = store.render_summaries()
         st.dialog = history.fresh_episode(store.render_block())
     if st.spoken_first:                  # Кореш заговорил первым (звонок/напоминание): модель должна знать, с чего начался разговор
@@ -128,6 +132,7 @@ async def close_episode(st: UserState, gen: int) -> None:
         store.add_episode(text)
     store.episode_closed()
     activation.apply_pending()           # граница эпизода: обновлённый пакет активации применяется здесь
+    store.apply_character(C.character_sig())
     st.recap = store.render_summaries()
     st.dialog = history.fresh_episode(store.render_block())
     print(f"history: эпизод закрыт в фоне, пересказ {len(text)} симв.", flush=True)
@@ -379,11 +384,11 @@ async def alice_webhook(secret: str, request: Request):
 
 @app.get("/health")
 async def health():
-    out = {"ok": True, "version": C.VERSION, "tone": C.tone(), "gender": C.gender(), "model": C.model(), "effort": C.effort(),
+    out = {"ok": True, "version": C.VERSION, "tone": C.tone(), "tone_source": C.source("TONE"), "gender": C.gender(), "model": C.model(), "effort": C.effort(),
            "locks": C.allow_locks() and bool(C.lock_phrase()),
            "iot": bool(C.iot_token()), "tokens_today": usage.used(),
            "spent_usd": usage.spent_usd(), "budget_usd": usage.budget_usd(),
            "memory": "disk" if memory.disk_ok() else "ram"}
-    if C.pack_active():                    # персональное (тон, род) наружу не светим
-        out.pop("tone"), out.pop("gender")
+    if C.pack_active():                    # персональное (род) наружу не светим; тон и откуда он взялся нужны для диагностики
+        out.pop("gender")
     return out

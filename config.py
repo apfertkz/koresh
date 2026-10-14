@@ -24,6 +24,10 @@ _MEM_ONLY: dict = {}                                       # копия, есл�
 # Слой «пакет активации» (см. activation.py): персональные настройки из сервера лицензий. Живёт ТОЛЬКО в оперативке,
 # на диск открытым не пишется. Приоритет: переменная Railway > пакет > config.json > умолчание.
 PACK_KEYS = ("ASSISTANT_NAME", "TONE", "GENDER")
+# Характер (имя, тон, род): значение, которое хозяин сам сохранил на /setup, главнее переменной Railway. Иначе стартовая
+# переменная (шаблон Railway и пробный прогон ставят TONE=derzkiy) намертво глушит выбор «С матом» на странице.
+# Порядок для этих трёх: /setup > переменная > пакет активации > умолчание.
+CHARACTER_KEYS = ("ASSISTANT_NAME", "TONE", "GENDER")
 _PACK: dict = {}
 # Модули (ТЗ-32): флаги из пакета лицензии. Нет флага = модуля нет. Отдельный слой от _PACK, потому что рубильник обязан срабатывать
 # сразу после обновления пакета (раз в час), а не ждать границы эпизода: см. activation.refresh_once.
@@ -104,7 +108,9 @@ def stored(name: str) -> str:
 
 
 def source(name: str) -> str:
-    """Откуда берётся значение: env (переменная Railway) | setup (config.json) | default."""
+    """Откуда берётся значение: env (переменная Railway) | setup (config.json) | pack (пакет активации) | default."""
+    if name in CHARACTER_KEYS and stored(name):
+        return "setup"
     if (os.environ.get(name) or "").strip():
         return "env"
     if name in STORED_KEYS and stored(name):
@@ -172,9 +178,12 @@ def set_setup_done(done: bool) -> bool:
 
 
 def env(name: str, default: str = "") -> str:
-    v = (os.environ.get(name) or "").strip()
-    if not v and name in STORED_KEYS:              # ручной выбор хозяина на /setup главнее пакета активации
-        v = stored(name)
+    if name in CHARACTER_KEYS:                     # характер: явный выбор хозяина на /setup главнее переменной (см. CHARACTER_KEYS)
+        v = stored(name) or (os.environ.get(name) or "").strip()
+    else:
+        v = (os.environ.get(name) or "").strip()
+        if not v and name in STORED_KEYS:          # ручной выбор хозяина на /setup главнее пакета активации
+            v = stored(name)
     if not v and name in PACK_KEYS:
         v = str(_PACK.get(name) or "").strip()
     return v or default.strip()
@@ -219,6 +228,11 @@ def tone() -> str:
 
 
 GENDERS = ("male", "female")
+
+
+def character_sig() -> str:
+    """Отпечаток характера (имя|тон|род). Сменился -> старые разговоры и заметки про прежний характер устарели."""
+    return f"{assistant_name()}|{tone()}|{gender()}"
 
 
 def gender() -> str:

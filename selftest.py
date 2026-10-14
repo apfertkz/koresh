@@ -1327,9 +1327,9 @@ check("17p. применяется сразу, без рестарта: имя/�
       C.assistant_name() == "Бро" and C.tone() == "derzkiy_mat" and C.gender() == "female"
       and "Тебя зовут Бро" in prompts.system_prompt() and "женского рода" in prompts.system_prompt())
 os.environ["TONE"] = "vezhlivyy"
-check("17q. переменная перекрывает config.json (env > config)", C.tone() == "vezhlivyy" and C.source("TONE") == "env")
+check("17q. характер: выбор на /setup главнее переменной (стартовая TONE=derzkiy не глушит «С матом»)", C.tone() == "derzkiy_mat" and C.source("TONE") == "setup")
 sj = tc.get("/setup/api/state").json()
-check("17r. state помечает значение из переменных", sj["tone"]["source"] == "env" and sj["name"]["source"] == "setup")
+check("17r. state: тон и имя из /setup, источник setup", sj["tone"]["source"] == "setup" and sj["name"]["source"] == "setup")
 os.environ.pop("TONE")
 check("17s. убрали переменную -> снова значение из config", C.tone() == "derzkiy_mat" and C.source("TONE") == "setup")
 check("17t. умолчание, если нигде не задано", C.source("BLOCKED_NAMES") == "default" and C.extra_blocked_names() == [])
@@ -2202,7 +2202,8 @@ leak_sources = {
 check("20k. /health, /setup/api/state и ответы активации не содержат заметок, города, хозяина, кода и ключей",
       not any(s in t for t in leak_sources.values() for s in ["Мурзик", "Алексей", "Алматы", GOOD_CODE, "seed-", "rt-rrrr"]),
       str({k: [s for s in ["Мурзик", "Алексей", "Алматы"] if s in t] for k, t in leak_sources.items()}))
-check("20l. /health при пакете не светит тон и род", "tone" not in tc20.get("/health").json() and "gender" not in tc20.get("/health").json())
+check("20l. /health при пакете не светит род, а тон и его источник показывает (диагностика)", "gender" not in tc20.get("/health").json()
+      and "tone" in tc20.get("/health").json() and "tone_source" in tc20.get("/health").json())
 sent_bodies = [b for p, b, h in LIC.requests if p != "/v1/pack/refresh"]
 check("20m. клиент шлёт серверу только код/handle/install_id, адрес сервера и секрет обмена: никакого Yandex ID от клиента",
       all(set(b) <= {"code", "install_id", "handle", "server_domain", "exchange_secret"} for b in sent_bodies) and all(YID_A not in json.dumps(b) for b in sent_bodies))
@@ -2640,6 +2641,9 @@ exec(compile((HERE / "selftest_moy.py").read_text(encoding="utf-8"), "selftest_m
 
 # ================= 26. «Кореш говорит первым» (ТЗ-35): звонок на Станцию через сценарий Алисы, очередь, тихие часы, лимиты, голосовые команды, страницы: код в selftest_proactive.py =================
 exec(compile((HERE / "selftest_proactive.py").read_text(encoding="utf-8"), "selftest_proactive.py", "exec"), globals())
+
+# ================= 27. Тон «С матом» не доходил до ответа: память с «мат не включается», приоритет env/setup/пакет, смена тона = новый эпизод: код в selftest_tone.py =================
+exec(compile((HERE / "selftest_tone.py").read_text(encoding="utf-8"), "selftest_tone.py", "exec"), globals())
 
 # ================= 14. Dockerfile копирует каждый модуль (новый файл не должен выпасть из образа) =================
 _copy = next(l for l in (HERE / "Dockerfile").read_text(encoding="utf-8").splitlines() if l.startswith("COPY ") and ".py" in l)
