@@ -18,7 +18,7 @@ import config as C
 import wa
 
 MONEY_KINDS = ("balance_low", "balance_zero")
-KINDS = MONEY_KINDS + ("reminder", "timer_done", "module")
+KINDS = MONEY_KINDS + ("reminder", "timer_done", "module", "settings_link")
 OUTBOX = "notify-outbox.json"
 OUTBOX_MAX = 20
 OUTBOX_TTL = 24 * 3600
@@ -69,6 +69,14 @@ def clean_text(kind: str, text: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]+", " ", t)).strip()[:500]
 
 
+def _body(iid: str, kind: str, text: str) -> dict:
+    b = {"install_id": iid, "kind": kind, "text": text}
+    dom = activation.server_domain()
+    if dom:
+        b["server_domain"] = dom         # адрес своего сервера: бот по нему даёт ссылку «⚙️ Мой Кореш» и после 7 суток доступа
+    return b
+
+
 async def _post_once(kind: str, text: str) -> str:
     """sent | drop | retry."""
     auth = activation.auth()
@@ -76,7 +84,7 @@ async def _post_once(kind: str, text: str) -> str:
         return "drop"
     iid, rt = auth
     try:
-        r = await activation._post("/v1/notify", {"install_id": iid, "kind": kind, "text": text},
+        r = await activation._post("/v1/notify", _body(iid, kind, text),
                                    headers={"Authorization": f"Bearer {rt}"}, timeout=TIMEOUT)
     except Exception as e:  # noqa: BLE001
         print(f"notify: очередь недоступна ({type(e).__name__})", flush=True)
@@ -104,6 +112,39 @@ async def post(kind: str, text: str) -> str:
         _write_outbox(items[-OUTBOX_MAX:])
         return "queued"
     return res
+
+
+SETTINGS_GAP = 60.0
+_LAST_LINK = {"at": 0.0}
+
+
+async def settings_link() -> str:
+    """Голосовое «пришли ссылку на настройки» (ТЗ-34): положить settings_link в очередь, бот пришлёт две кнопки-ссылки в Телеграм.
+    Итог для честного ответа голосом: queued | again (только что слали) | no_tg (сервер лицензий не знает Телеграма клиента) | off (нет активации) | fail.
+    Локальной очереди на повтор нет: ссылка, которая пришла через час, уже не то, что просили."""
+    if not activation.configured() or not activation.auth():
+        return "off"
+    t = _now()
+    if t - _LAST_LINK["at"] < SETTINGS_GAP:
+        return "again"
+    iid, rt = activation.auth()
+    try:
+        r = await activation._post("/v1/notify", _body(iid, "settings_link", "Ссылки на настройки твоего Кореша."),
+                                   headers={"Authorization": f"Bearer {rt}"}, timeout=TIMEOUT)
+    except Exception as e:  # noqa: BLE001
+        print(f"notify: ссылка на настройки: сеть {type(e).__name__}", flush=True)
+        return "fail"
+    if r.status_code != 200:
+        print(f"notify: ссылка на настройки: сервер ответил {r.status_code}", flush=True)
+        return "fail"
+    try:
+        status = str((r.json() or {}).get("status") or "")
+    except ValueError:
+        status = ""
+    if status == "no_tg":
+        return "no_tg"
+    _LAST_LINK["at"] = t
+    return "queued"
 
 
 async def flush() -> int:

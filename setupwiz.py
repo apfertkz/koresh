@@ -31,6 +31,7 @@ import wa
 
 router = APIRouter()
 PAGE = Path(__file__).resolve().parent / "setupwiz.html"
+PAGE_MOD = Path(__file__).resolve().parent / "setupmod.html"
 
 SESSION_TTL = 2 * 3600
 MAX_FAILS = 5                  # неверных кодов подряд -> блок на LOCK_SECONDS (общий, не по адресу: адрес подделывается)
@@ -45,6 +46,7 @@ BRAIN_COOLDOWN = 3.0
 _TRANSPORT = None              # ворота подставляют httpx.MockTransport (проверка токена умного дома и колбэк)
 _sessions: dict[str, float] = {}
 _wa_only: set[str] = set()               # сессии «только перепривязка WhatsApp»: настройка закрыта, остальное им не отдаётся
+_mod_only: set[str] = set()              # сессии страницы /setup/moduli (ТЗ-34): видят только модули, баланс, пояс и фразу; setup_done они не трогают
 _session_codes: dict[str, str] = {}      # sid -> код KR-…, которым вошли (только в оперативке): блок «Код активации» заполняется им
 KR_SHAPE = re.compile(r"^KR[A-Z0-9]{12}$")
 _fails = {"n": 0, "until": 0.0}
@@ -60,6 +62,7 @@ def reset_for_tests() -> None:
     _sessions.clear()
     _session_codes.clear()
     _wa_only.clear()
+    _mod_only.clear()
     _fails.update(n=0, until=0.0)
     _heard.update(ts=0.0, text="", kind="")
     _last_brain["ts"] = 0.0
@@ -78,11 +81,13 @@ def _purge() -> None:
         _session_codes.pop(sid, None)
     for sid in [s for s in _wa_only if s not in _sessions]:
         _wa_only.discard(sid)
+    for sid in [s for s in _mod_only if s not in _sessions]:
+        _mod_only.discard(sid)
 
 
 def sessions_active() -> bool:
     _purge()
-    return bool(_sessions)
+    return any(sid not in _mod_only for sid in _sessions)         # страница модулей «услышанное» не накапливает: это только для мастера
 
 
 def _session_ok(request: Request) -> bool:
@@ -122,14 +127,25 @@ def _need_auth(request: Request) -> None:
     _need_enabled()
     if not _session_ok(request):
         raise HTTPException(status_code=401)
-    if request.cookies.get(COOKIE, "") in _wa_only:
-        raise HTTPException(status_code=403)          # вошла только перепривязать WhatsApp: остальная настройка закрыта
+    if request.cookies.get(COOKIE, "") in _wa_only or request.cookies.get(COOKIE, "") in _mod_only:
+        raise HTTPException(status_code=403)          # вошла только перепривязать WhatsApp / только в модули: остальная настройка закрыта
 
 
 def _need_auth_wa(request: Request) -> None:
     _need_enabled()
     if not _session_ok(request):
         raise HTTPException(status_code=401)
+    if request.cookies.get(COOKIE, "") in _mod_only:
+        raise HTTPException(status_code=403)
+
+
+def _need_mod(request: Request) -> None:
+    """Страница /setup/moduli: годится и сессия «только модули», и полная сессия мастера; «только WhatsApp» нет."""
+    _need_enabled()
+    if not _session_ok(request):
+        raise HTTPException(status_code=401)
+    if request.cookies.get(COOKIE, "") in _wa_only:
+        raise HTTPException(status_code=403)
 
 
 async def _body(request: Request) -> dict:
@@ -288,15 +304,12 @@ async def me(request: Request):
                     locked_for=max(0, int(_fails["until"] - _now())))
 
 
-@router.post("/setup/api/login")
-async def login(request: Request):
-    _need_enabled()
-    data = await _body(request)
+async def _verify_code(code: str):
+    """Проверка кода входа (общая для мастера и для /setup/moduli). -> (kr, None) при успехе, (kr, JSONResponse) при отказе.
+    Счётчик неверных попыток общий: перебирать коды через вторую страницу нельзя."""
     now = _now()
     if _fails["until"] > now:
-        return _json_err(429, "locked", "Слишком много неверных кодов. Подожди и попробуй позже.",
-                         retry_in=int(_fails["until"] - now) + 1)
-    code = str(data.get("code") or "")
+        return "", _json_err(429, "locked", "Слишком много неверных кодов. Подожди и попробуй позже.", retry_in=int(_fails["until"] - now) + 1)
     kr = ""
     ok = bool(code) and _code_ok(code)                      # запасной вход для нас: SETUP_CODE из переменных
     if not ok and code:
@@ -304,7 +317,7 @@ async def login(request: Request):
         if kr:                                              # основной вход клиента: код KR-… из бота, проверяет сервер лицензий
             chk = await activation.check_code(kr)
             if chk.get("error") == "net":                   # сервер лицензий не ответил: это не неверная попытка
-                return _json_err(502, "net", chk["message"])
+                return kr, _json_err(502, "net", chk["message"])
             ok = bool(chk.get("ok"))
     if not ok:
         _fails["n"] += 1
@@ -312,10 +325,20 @@ async def login(request: Request):
         print(f"setup: неверный код ({_fails['n']}/{MAX_FAILS})", flush=True)
         if left <= 0:
             _fails.update(n=0, until=now + LOCK_SECONDS)
-            return _json_err(429, "locked", "Слишком много неверных кодов. Вход закрыт на десять минут.",
-                             retry_in=LOCK_SECONDS)
-        return _json_err(401, "bad_code", "Код не подошёл.", left=left)
+            return kr, _json_err(429, "locked", "Слишком много неверных кодов. Вход закрыт на десять минут.", retry_in=LOCK_SECONDS)
+        return kr, _json_err(401, "bad_code", "Код не подошёл.", left=left)
     _fails["n"] = 0
+    return kr, None
+
+
+@router.post("/setup/api/login")
+async def login(request: Request):
+    _need_enabled()
+    data = await _body(request)
+    now = _now()
+    kr, err = await _verify_code(str(data.get("code") or ""))
+    if err is not None:
+        return err
     reopen = bool(data.get("reopen"))
     wa_only = False
     if C.setup_done():
@@ -379,11 +402,7 @@ async def check_brain(request: Request):
     return _json_ok(status="ok", message=BRAIN_MESSAGES["ok"])
 
 
-@router.post("/setup/api/topup")
-async def topup(request: Request):
-    """«Я пополнил»: сумма, которую клиент закинул на Anthropic, и счётчик трат с нуля. 0 = не следить (включено автопополнение)."""
-    _need_auth(request)
-    d = await _body(request)
+def _do_topup(d: dict) -> JSONResponse:
     raw = d.get("amount")
     try:
         amount = float(str(raw).replace(",", ".").replace("$", "").strip())
@@ -394,6 +413,13 @@ async def topup(request: Request):
     amt = usage.topup(amount)
     print(f"setup: баланс Anthropic: пополнение учтено ({amt} $)", flush=True)
     return _json_ok(balance=usage.snapshot())
+
+
+@router.post("/setup/api/topup")
+async def topup(request: Request):
+    """«Я пополнил»: сумма, которую клиент закинул на Anthropic, и счётчик трат с нуля. 0 = не следить (включено автопополнение)."""
+    _need_auth(request)
+    return _do_topup(await _body(request))
 
 
 BRAIN_MESSAGES = {
@@ -557,11 +583,7 @@ async def home(request: Request):
                     overridden=[k for k in ("HOUSEHOLD", "BLOCKED_NAMES", "ALLOW_LOCKS", "LOCK_PHRASE") if C.source(k) == "env"])
 
 
-@router.post("/setup/api/modules")
-async def modules_settings(request: Request):
-    """Настройки модулей (ТЗ-32): часовой пояс напоминаний и кодовая фраза взрослого для детского режима."""
-    _need_auth(request)
-    d = await _body(request)
+def _do_modules(d: dict) -> JSONResponse:
     upd = {}
     if d.get("tz_offset") not in (None, ""):
         try:
@@ -587,9 +609,106 @@ async def modules_settings(request: Request):
                     overridden=[k for k in ("TZ_OFFSET", "KIDS_PHRASE") if C.source(k) == "env"])
 
 
+@router.post("/setup/api/modules")
+async def modules_settings(request: Request):
+    """Настройки модулей (ТЗ-32): часовой пояс напоминаний и кодовая фраза взрослого для детского режима."""
+    _need_auth(request)
+    return _do_modules(await _body(request))
+
+
 def _same_phrase(a: str, b: str) -> bool:
     norm = lambda s: " ".join(re.findall(r"[0-9a-zа-я]+", (s or "").lower().replace("ё", "е")))  # noqa: E731
     return bool(norm(b)) and norm(a) == norm(b)
+
+
+# ---------- страница «Модули и баланс» /setup/moduli (ТЗ-34) ----------
+# Лёгкий повседневный вход для клиента: тот же код (KR-… или SETUP_CODE), но БЕЗ «Перенастроить» и без сброса setup_done.
+# Сессия этого входа открывает только пять ручек ниже; всё остальное (state, check-brain, character, WhatsApp...) ей отвечает 403.
+MODULE_INFO = (
+    ("macros", "Макросы", "Голосовые сценарии: «запомни: когда я говорю X, сделай то-то»."),
+    ("timers", "Напоминания и таймеры", "«Напомни в 18:00 забрать малого», «через 40 минут выключи свет»."),
+    ("kids", "Детский режим", "Мягкий тон, сказки и загадки, из умного дома только свет. Выключается кодовой фразой взрослого."),
+)
+
+
+def build_mod_state() -> dict:
+    return {
+        "version": C.VERSION,
+        "name": C.assistant_name(),
+        "modules": [{"id": i, "title": t, "about": a, "on": C.module_on(i)} for i, t, a in MODULE_INFO],
+        "tz_offset": _field("TZ_OFFSET", C.tz_offset()),
+        "kids_phrase": {"set": bool(C.kids_phrase()), "source": C.source("KIDS_PHRASE")},          # саму фразу не отдаём никогда
+        "balance": usage.snapshot(),
+    }
+
+
+@router.get("/setup/moduli", response_class=HTMLResponse)
+@router.get("/setup/moduli/", response_class=HTMLResponse, include_in_schema=False)
+async def moduli_page():
+    _need_enabled()
+    headers = {
+        "Cache-Control": "no-store", "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+                                   "connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+    }
+    return HTMLResponse(PAGE_MOD.read_text(encoding="utf-8"), headers=headers)
+
+
+@router.get("/setup/api/moduli/me")
+async def moduli_me(request: Request):
+    _need_enabled()
+    ok = _session_ok(request) and request.cookies.get(COOKIE, "") not in _wa_only
+    return _json_ok(authed=ok, locked_for=max(0, int(_fails["until"] - _now())))
+
+
+@router.post("/setup/api/moduli/login")
+async def moduli_login(request: Request):
+    _need_enabled()
+    data = await _body(request)
+    kr, err = await _verify_code(str(data.get("code") or ""))
+    if err is not None:
+        return err
+    if _session_ok(request) and request.cookies.get(COOKIE, "") not in _wa_only | _mod_only:
+        return _json_ok(scope="full")                  # человек уже в мастере: его полную сессию не понижаем
+    sid = secrets.token_urlsafe(32)
+    _sessions[sid] = _now() + SESSION_TTL
+    _mod_only.add(sid)
+    resp = _json_ok(scope="moduli")
+    secure = (request.headers.get("x-forwarded-proto") or request.url.scheme).split(",")[0].strip() == "https"
+    resp.set_cookie(COOKIE, sid, max_age=SESSION_TTL, httponly=True, samesite="strict", secure=secure, path="/setup")
+    return resp
+
+
+@router.post("/setup/api/moduli/logout")
+async def moduli_logout(request: Request):
+    _need_enabled()
+    sid = request.cookies.get(COOKIE, "")
+    if sid in _mod_only:                               # полную сессию мастера отсюда не гасим
+        _sessions.pop(sid, None)
+        _mod_only.discard(sid)
+        resp = _json_ok()
+        resp.delete_cookie(COOKIE, path="/setup")
+        return resp
+    return _json_ok()
+
+
+@router.get("/setup/api/moduli/state")
+async def moduli_state(request: Request):
+    _need_mod(request)
+    return _json_ok(**build_mod_state())
+
+
+@router.post("/setup/api/moduli/settings")
+async def moduli_settings(request: Request):
+    _need_mod(request)
+    return _do_modules(await _body(request))
+
+
+@router.post("/setup/api/moduli/topup")
+async def moduli_topup(request: Request):
+    _need_mod(request)
+    return _do_topup(await _body(request))
 
 
 @router.get("/setup/api/heard")

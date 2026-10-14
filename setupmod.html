@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Кореш: модули и баланс</title>
+<style>
+:root{--paper:#f4f0e8;--ink:#20201e;--orange:#ff4d2b;--yellow:#f4cb70;--white:#fffdf8;--green:#2f7d4f;--red:#c0321a;--line:3px solid var(--ink)}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+header{display:flex;align-items:center;gap:14px;padding:14px 20px;border-bottom:var(--line);background:var(--yellow)}
+header .logo{font-weight:900;font-size:22px;letter-spacing:.04em;text-transform:uppercase}
+header .logo i{font-style:normal;background:var(--ink);color:var(--yellow);padding:0 8px;margin-right:6px}
+header .sub{font-size:14px;opacity:.75}
+header .sp{flex:1}
+main{max-width:640px;margin:0 auto;padding:22px 16px 80px}
+h1{font-size:28px;line-height:1.15;margin:6px 0 10px;font-weight:900}
+h2{font-size:21px;line-height:1.2;margin:0 0 8px;font-weight:900}
+p{margin:8px 0}
+.small{font-size:14px;opacity:.8}
+.card{background:var(--white);border:var(--line);box-shadow:6px 6px 0 var(--ink);padding:18px;margin:18px 0}
+.btn{font:inherit;font-weight:800;background:var(--orange);color:var(--ink);border:var(--line);box-shadow:4px 4px 0 var(--ink);padding:10px 18px;min-height:44px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;text-align:center;margin:6px 8px 6px 0}
+.btn:active{transform:translate(3px,3px);box-shadow:1px 1px 0 var(--ink)}
+.btn.alt{background:var(--white)}
+.btn[disabled]{opacity:.5;cursor:wait}
+label{display:block;font-weight:700;margin:14px 0 4px}
+input[type=text],input[type=password]{width:100%;font:inherit;background:#fff;color:var(--ink);border:var(--line);padding:9px 11px;border-radius:0}
+input:focus,button:focus-visible,a:focus-visible{outline:3px solid var(--orange);outline-offset:2px}
+input[type=checkbox]{width:20px;height:20px;accent-color:var(--orange);margin:0}
+.opt{display:flex;gap:12px;align-items:flex-start;border:var(--line);background:#fff;padding:10px 12px;margin:8px 0;cursor:pointer;font-weight:400}
+.note{border:var(--line);padding:10px 14px;margin:12px 0;font-weight:600}
+.note.ok{background:#dcefe2;border-color:var(--green)}
+.note.bad{background:#f9d9d2;border-color:var(--red)}
+.note.warn{background:var(--yellow)}
+.note.info{background:#fff}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow-wrap:anywhere}
+.mods{margin:8px 0;padding:0;list-style:none}
+.mods li{border-bottom:2px solid var(--ink);padding:10px 0}
+.mods li:last-child{border-bottom:0}
+.mods b{display:inline-block;margin-right:8px}
+.tag{font-size:12px;font-weight:800;border:2px solid var(--ink);padding:0 7px;background:var(--white);white-space:nowrap;vertical-align:middle}
+.tag.on{background:#dcefe2;border-color:var(--green)}
+.tag.src{background:var(--yellow)}
+.hidden{display:none}
+.row2{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+@media (max-width:480px){header{padding:12px 14px}main{padding:16px 14px 70px}.btn{width:100%;margin-right:0}}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo"><i>К</i>Кореш</div>
+  <div class="sub">модули и баланс</div>
+  <div class="sp"></div>
+  <button class="btn alt hidden" id="logout" style="margin:0;padding:6px 12px;box-shadow:none;width:auto">Выйти</button>
+</header>
+<main id="app"><p>Загрузка…</p></main>
+
+<script>
+"use strict";
+const app = document.getElementById('app');
+{ const rc = Element.prototype.replaceChildren; Element.prototype.replaceChildren = function (...k) { return rc.apply(this, k.filter(c => c != null && c !== false)); }; }
+let S = null;
+
+function h(tag, a, ...kids) {
+  const e = document.createElement(tag);
+  if (a) for (const [k, v] of Object.entries(a)) {
+    if (k === 'class') e.className = v;
+    else if (k === 'on') for (const [ev, fn] of Object.entries(v)) e.addEventListener(ev, fn);
+    else if (k === 'value') e.value = v;
+    else if (v === true) e.setAttribute(k, '');
+    else if (v !== false && v != null) e.setAttribute(k, v);
+  }
+  for (const c of kids.flat(Infinity)) {
+    if (c == null || c === false) continue;
+    e.append(c.nodeType ? c : document.createTextNode(String(c)));
+  }
+  return e;
+}
+const note = (kind, ...kids) => h('div', {class: 'note ' + kind, role: 'status'}, ...kids);
+function btn(label, fn, cls) {
+  const b = h('button', {type: 'button', class: 'btn ' + (cls || '')}, label);
+  b.addEventListener('click', async () => { if (b.disabled) return; b.disabled = true; try { await fn(b); } finally { b.disabled = false; } });
+  return b;
+}
+async function api(path, body) {
+  const opt = {credentials: 'same-origin'};
+  if (body !== undefined) { opt.method = 'POST'; opt.headers = {'Content-Type': 'application/json'}; opt.body = JSON.stringify(body); }
+  let r, j = {};
+  try { r = await fetch('/setup/api/moduli/' + path, opt); } catch (e) { return {ok: false, status: 0, message: 'Нет связи с сервером. Проверь интернет и попробуй ещё раз.'}; }
+  try { j = await r.json(); } catch (e) { /* не JSON */ }
+  if (r.status === 401 && path !== 'login') renderLogin('Сессия кончилась, введи код ещё раз.');
+  return Object.assign({status: r.status, ok: r.ok}, j);
+}
+const money = x => '$' + (Math.round(x * 100) / 100).toFixed(2);
+const setLogout = show => document.getElementById('logout').classList.toggle('hidden', !show);
+document.getElementById('logout').addEventListener('click', async () => { await api('logout', {}); renderLogin(); });
+
+function renderLogin(msg) {
+  setLogout(false);
+  const input = h('input', {type: 'text', class: 'mono', name: 'koresh-login-code', autocomplete: 'off', autocapitalize: 'characters', autocorrect: 'off',
+    spellcheck: 'false', 'data-lpignore': 'true', 'data-1p-ignore': 'true', 'data-form-type': 'other', placeholder: 'KR-XXXX-XXXX-XXXX', 'aria-label': 'Код из бота'});
+  const out = h('div');
+  const go = async () => {
+    out.replaceChildren();
+    const code = input.value.trim();
+    if (!code) { out.append(note('bad', 'Введи код из бота.')); return; }
+    const r = await api('login', {code});
+    input.value = '';
+    if (r.ok) { start(); return; }
+    out.append(note('bad', r.message || 'Не получилось войти.'));
+  };
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+  app.replaceChildren(h('div', {class: 'card'},
+    h('h1', 0, 'Модули и баланс'),
+    msg ? note('warn', msg) : null,
+    h('p', 0, 'Введи код активации из бота: он начинается с KR- и лежит в чате с ботом (кнопка «⚙️ Мой Кореш» покажет его снова).'),
+    h('p', {class: 'small'}, 'Здесь только модули, часовой пояс, кодовая фраза взрослого и баланс Anthropic. Эта страница ничего не перенастраивает и установку не сбрасывает.'),
+    input, out, btn('Войти', go)));
+}
+
+function modulesCard() {
+  return h('div', {class: 'card'},
+    h('h2', 0, 'Модули'),
+    h('ul', {class: 'mods'}, S.modules.map(m => h('li', 0,
+      h('b', 0, m.title), h('span', {class: 'tag' + (m.on ? ' on' : '')}, m.on ? 'включён' : 'не подключён'),
+      h('div', {class: 'small'}, m.about),
+      m.on ? null : h('div', {class: 'small'}, 'Подключается отдельно: напиши в бот-установщик, он подскажет.')))));
+}
+
+function settingsCard() {
+  const on = Object.fromEntries(S.modules.map(m => [m.id, m.on]));
+  if (!on.timers && !on.kids) return null;
+  const out = h('div');
+  const tz = h('input', {type: 'text', inputmode: 'decimal', maxlength: 5, value: String(S.tz_offset.value), 'aria-label': 'Часовой пояс'});
+  const kp = h('input', {type: 'password', autocomplete: 'new-password', maxlength: 80,
+    placeholder: S.kids_phrase.set ? 'Фраза задана. Оставь пустым, чтобы не менять' : 'Кодовая фраза взрослого (минимум 2 слова)', 'aria-label': 'Кодовая фраза взрослого'});
+  const kc = h('input', {type: 'checkbox'});
+  return h('div', {class: 'card'},
+    h('h2', 0, 'Настройки модулей'),
+    on.timers ? h('div', 0, h('label', 0, 'Часовой пояс для напоминаний (часы от UTC, Алматы это 5)'), tz) : null,
+    on.kids ? h('div', 0,
+      h('label', 0, 'Кодовая фраза взрослого для детского режима'), kp,
+      S.kids_phrase.set ? h('label', {class: 'opt'}, kc, h('span', 0, 'Стереть сохранённую фразу (детский режим заодно выключится)')) : null,
+      h('p', {class: 'small'}, 'Без этой фразы детский режим не включится: сначала задай её. Выключается только её произнесением. Не говори её при детях. Минимум два слова, например «синяя ромашка». Три неверные попытки подряд, и Кореш на 10 минут перестаёт принимать выключение. Фраза нигде не показывается.')) : null,
+    btn('Сохранить', async () => {
+      if (kp.value.trim() && kp.value.trim().split(/\s+/).filter(Boolean).length < 2) { out.replaceChildren(note('bad', 'Кодовая фраза взрослого: минимум два слова.')); return; }
+      const r = await api('settings', {tz_offset: on.timers ? tz.value : '', kids_phrase: kp.value, clear_kids_phrase: kc.checked});
+      kp.value = '';
+      if (!r.ok) { out.replaceChildren(note('bad', r.message || 'Не получилось.')); return; }
+      const st = await api('state'); if (st.ok) { S = st; renderMain(); }
+      out.replaceChildren(note('ok', 'Сохранено. Применяется сразу.'), r.persisted ? null : note('warn', 'Диск недоступен: настройки живут до перезапуска.'));
+    }),
+    out);
+}
+
+function balanceCard() {
+  const B = S.balance || {budget_usd: 5, spent_usd: 0, remaining_usd: 5, days_left: null};
+  const amount = h('input', {type: 'text', inputmode: 'decimal', name: 'anthropic-topup', autocomplete: 'off', 'aria-label': 'Сколько ты закинул на Anthropic, в долларах',
+    value: String(B.budget_usd), style: 'width:7em'});
+  const out = h('div');
+  const line = b => b.budget_usd > 0
+    ? 'Потрачено ' + money(b.spent_usd) + ' из ' + money(b.budget_usd) + (b.days_left ? ', хватит примерно на ' + b.days_left + ' дн.' : '') + '. Это оценка из токенов, точный остаток виден только в консоли Anthropic.'
+    : 'Слежение выключено (сумма 0). Годится, если в Anthropic включено автопополнение.';
+  const status = h('p', {class: 'small', id: 'balance-line'}, line(B));
+  return h('div', {class: 'card'},
+    h('h2', 0, 'Баланс на Anthropic'),
+    h('p', 0, '$5 на Anthropic это баланс на разговоры, а не разовый платёж. Кореш считает траты и заранее скажет голосом и сообщением в Телеграм, когда деньги на исходе. Совет: включи в Anthropic автопополнение (Billing, Auto-reload: порог $2, пополнять на $5). С автопополнением поставь здесь 0, чтобы Кореш не предупреждал зря.'),
+    status,
+    h('label', 0, 'Сколько ты закинул на Anthropic ($)'),
+    h('div', {class: 'row2'}, amount,
+      btn('Я пополнил', async () => {
+        const r = await api('topup', {amount: amount.value});
+        if (!r.ok) { out.replaceChildren(note('bad', r.message || 'Не получилось.')); return; }
+        S.balance = r.balance;
+        status.textContent = line(r.balance);
+        out.replaceChildren(note('ok', 'Записал. Счётчик трат с нуля.'));
+      })),
+    h('a', {class: 'btn alt', href: 'https://console.anthropic.com/settings/billing', target: '_blank', rel: 'noopener noreferrer'}, 'Открыть консоль Anthropic'),
+    out);
+}
+
+function renderMain() {
+  setLogout(true);
+  app.replaceChildren(
+    h('h1', 0, 'Мой Кореш'),
+    h('p', {class: 'small'}, 'Версия ' + S.version + '. Полная настройка сервера: ', h('span', {class: 'mono'}, location.origin + '/setup'), '.'),
+    modulesCard(), settingsCard(), balanceCard());
+}
+
+async function start() {
+  const r = await api('state');
+  if (!r.ok) { renderLogin(r.status === 401 ? undefined : (r.message || undefined)); return; }
+  S = r;
+  renderMain();
+}
+
+(async () => {
+  const me = await api('me');
+  if (me.ok && me.authed) start(); else renderLogin();
+})();
+</script>
+</body>
+</html>

@@ -2635,6 +2635,9 @@ exec(compile((HERE / "selftest_balance.py").read_text(encoding="utf-8"), "selfte
 # ================= 24. Модули (ТЗ-32): макросы, напоминания и действия по времени, детский режим, уведомления в очередь Телеграма: код в selftest_modules.py =================
 exec(compile((HERE / "selftest_modules.py").read_text(encoding="utf-8"), "selftest_modules.py", "exec"), globals())
 
+# ================= 25. «Мой Кореш» (ТЗ-34): голосовая ссылка на настройки, адрес сервера серверу лицензий, страница /setup/moduli: код в selftest_moy.py =================
+exec(compile((HERE / "selftest_moy.py").read_text(encoding="utf-8"), "selftest_moy.py", "exec"), globals())
+
 # ================= 14. Dockerfile копирует каждый модуль (новый файл не должен выпасть из образа) =================
 _copy = next(l for l in (HERE / "Dockerfile").read_text(encoding="utf-8").splitlines() if l.startswith("COPY ") and ".py" in l)
 _mods = {f.name for f in HERE.glob("*.py") if not f.name.startswith("selftest")}

@@ -18,7 +18,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY --from=wa /usr/local/bin/node /usr/local/bin/node
 COPY --from=wa /wa/node_modules /app/wa/node_modules
 COPY wa/wa-daemon.js wa/package.json /app/wa/
-COPY config.py activation.py notify.py modules.py memory.py usage.py iot.py prompts.py honesty.py tts.py history.py summarize.py brain.py wa.py setupwiz.py setupwiz.html main.py ./
+COPY config.py activation.py notify.py modules.py memory.py usage.py iot.py prompts.py honesty.py tts.py history.py summarize.py brain.py wa.py setupwiz.py setupwiz.html setupmod.html main.py ./
 # Долгая память: MEMORY_DIR. На Railway сюда монтируется Volume (mount path /data); без Volume каталог просто
 # пустой и живёт до перезапуска. Volume монтируется от root: на Railway нужна переменная RAILWAY_RUN_UID=0 (см. SETUP.md).
 # Сессия WhatsApp лежит там же: /data/wa/auth (права 0700 ставит сам сервер).

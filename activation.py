@@ -11,6 +11,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 import secrets
 import time
 import uuid
@@ -88,6 +89,20 @@ def _read_state() -> dict:
 
 def _write_state(d: dict) -> bool:
     return _write_atomic(_path(STATE_NAME), json.dumps(d, ensure_ascii=False).encode())
+
+
+_HOST_RE = re.compile(r"^(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$")
+
+
+def _host(raw) -> str:
+    h = re.sub(r"^https?://", "", str(raw or "").strip().lower()).split("/")[0].split("?")[0].split("#")[0]
+    return h if _HOST_RE.match(h) else ""
+
+
+def server_domain() -> str:
+    """Адрес ЭТОГО сервера (хост без схемы) для сервера лицензий: по нему бот даёт ссылку «⚙️ Мой Кореш» в любой день, а не только при установке.
+    Переменные Railway главнее, иначе тот хост, с которого человек входил на /setup (запомнили в start_flow). Нет надёжного адреса -> пусто."""
+    return _host(C.env("PUBLIC_URL")) or _host(C.env("RAILWAY_PUBLIC_DOMAIN")) or _host(_read_state().get("server_domain"))
 
 
 def install_id() -> str:
@@ -309,6 +324,11 @@ async def start_flow(code: str, domain: str = "") -> dict:
     if not domain:
         return {"ok": False, "error": "bad_domain", "message": MSG_NO_DOMAIN}
     secret = secrets.token_urlsafe(32)
+    dom = _host(domain)
+    if dom and _read_state().get("server_domain") != dom:             # запомнить адрес: refresh и уведомления будут слать его серверу лицензий
+        st0 = _read_state()
+        st0["server_domain"] = dom
+        _write_state(st0)
     try:
         r = await _post("/v1/install/start", {"code": str(code or "")[:40], "install_id": install_id(),
                                               "server_domain": domain, "exchange_secret": secret})
@@ -366,7 +386,7 @@ async def refresh_once() -> str:
         if not configured() or not rt or not iid or not os.path.exists(_path(PACK_NAME)):
             return "skip"
         r = await _post("/v1/pack/refresh", {"install_id": iid, "since": int(st.get("pack_version") or 0),
-                                             "version": str(C.VERSION)[:40]},
+                                             "version": str(C.VERSION)[:40], **({"server_domain": server_domain()} if server_domain() else {})},
                         headers={"Authorization": f"Bearer {rt}"}, timeout=REFRESH_TIMEOUT)
         if r.status_code == 410:
             forget(clear_ram=False)
