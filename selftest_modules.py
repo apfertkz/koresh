@@ -78,6 +78,7 @@ class Lic24:
     def __init__(self):
         self.notes, self.refreshes, self.status, self.down = [], [], 200, False
         self.pack, self.version = {"schema": 1, "version": 1}, 1
+        self.legacy_same = False      # старый сервер: «то же самое» без полей modules / promo_all_modules
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         if self.down:
@@ -93,7 +94,8 @@ class Lic24:
         if request.url.path == "/v1/pack/refresh":
             self.refreshes.append(body)
             if self.version <= body.get("since", 0):
-                return httpx.Response(200, json={"ok": True, "status": "same", "pack_version": self.version})
+                extra = {} if self.legacy_same else {"modules": dict(self.pack.get("modules") or {}), "promo_all_modules": self.pack.get("promo_all_modules") is True}
+                return httpx.Response(200, json={"ok": True, "status": "same", "pack_version": self.version, **extra})
             return httpx.Response(200, json={"ok": True, "status": "update", "pack": self.pack, "pack_version": self.version})
         return httpx.Response(404)
 
@@ -130,6 +132,7 @@ def _r24():
     LIC24.notes.clear()
     LIC24.refreshes.clear()
     LIC24.status, LIC24.down = 200, False
+    LIC24.legacy_same = False
     iot._TRANSPORT = httpx.MockTransport(_y24)
     iot.reset_cache()
     wa.reset_for_tests()
@@ -357,6 +360,62 @@ LIC24.version, LIC24.pack = 2, {"schema": 1, "version": 2, "modules": {"kids": T
 check("24r11. версия сервера ниже нашей -> ok_same_resync, счётчик сброшен", run(activation.refresh_once()) == "same" and activation.refresh_info()["status"] == "ok_same_resync"
       and activation._read_state().get("pack_version") == 0)
 check("24r12. следующий заход забирает пакет заново", run(activation.refresh_once()) == "update" and C.module_on("kids") and not C.module_on("macros"))
+# ---- модули доезжают и когда версия пакета НЕ выросла (сервер вернул тот же пакет, но модули изменились) ----
+_r24()
+_pack24()
+LIC24.pack, LIC24.version = {"schema": 1, "version": 1, "modules": {"macros": True, "kids": True}}, 1
+check("24m1. сервер: версия та же (since=1), но модули включили -> модули обновились СРАЗУ, статус ok_modules",
+      run(activation.refresh_once()) == "same" and activation.refresh_info()["status"] == "ok_modules" and C.module_on("macros") and C.module_on("kids")
+      and not C.module_on("timers"), activation.refresh_info()["status"])
+with TestClient(main.app) as _tc24m:
+    hjm = _tc24m.get("/health").json()
+check("24m2. /health показывает включённые модули", hjm.get("modules") == {"macros": True, "timers": False, "kids": True}, str(hjm))
+activation.reset_for_tests()
+check("24m3. после перезапуска модули читаются с диска (пакет на диске переписан)", activation.load() and C.module_on("macros") and C.module_on("kids") and not C.module_on("timers"))
+check("24m4. версия пакета в license.json не тронута (это не обновление пакета)", activation._read_state().get("pack_version") == 1)
+check("24m5. тот же набор модулей второй раз -> обычный ok_same, диск не трогаем",
+      run(activation.refresh_once()) == "same" and activation.refresh_info()["status"] == "ok_same")
+LIC24.pack = {"schema": 1, "version": 1, "modules": {"kids": True}}
+check("24m6. выключение на сервере без роста версии доезжает: macros погас, kids остался",
+      run(activation.refresh_once()) == "same" and activation.refresh_info()["status"] == "ok_modules" and not C.module_on("macros") and C.module_on("kids"))
+LIC24.pack = {"schema": 1, "version": 1}
+run(activation.refresh_once())
+check("24m7. на сервере выключили всё (modules пусто) -> все погасли, и на диске тоже",
+      not any(C.module_on(n) for n in C.MODULE_NAMES) and (activation.reset_for_tests() or activation.load()) and not any(C.module_on(n) for n in C.MODULE_NAMES))
+_pack24()
+LIC24.pack = {"schema": 1, "version": 1, "promo_all_modules": True, "modules": {"macros": True, "timers": False, "kids": True}}
+run(activation.refresh_once())
+check("24m8. акция на сервере без роста версии: все, кроме явно выключенного timers", C.module_on("macros") and C.module_on("kids") and not C.module_on("timers"))
+activation.reset_for_tests()
+activation.load()
+check("24m9. акция с диска после перезапуска: те же флаги", C.module_on("macros") and C.module_on("kids") and not C.module_on("timers") and activation.sanitize(C.pack()).get("promo_all_modules") is True)
+# старый сервер не присылает поля модулей в same -> ничего не трогаем
+_r24()
+_pack24(["macros"])
+activation.load()
+LIC24.legacy_same, LIC24.pack, LIC24.version = True, {"schema": 1, "version": 1}, 1
+check("24m10. старый сервер: same без полей модулей -> модули не гаснут, статус ok_same",
+      run(activation.refresh_once()) == "same" and activation.refresh_info()["status"] == "ok_same" and C.module_on("macros"))
+LIC24.legacy_same = False
+# отложенный пакет (граница эпизода) не откатывает свежие модули
+_r24()
+_pack24()
+activation.load()
+LIC24.pack, LIC24.version = {"schema": 1, "version": 2, "ASSISTANT_NAME": "Гоша"}, 2
+run(activation.refresh_once())                                      # update: пакет ждёт границы эпизода, модулей нет
+LIC24.pack = {"schema": 1, "version": 2, "ASSISTANT_NAME": "Гоша", "modules": {"timers": True}}
+run(activation.refresh_once())                                      # same с новым набором модулей
+activation.apply_pending()
+check("24m11. граница эпизода после синхронизации модулей: timers остался включён, имя из нового пакета применилось",
+      C.module_on("timers") and C.pack().get("ASSISTANT_NAME") == "Гоша")
+# страница модулей (refresh_on_demand) подтягивает изменение без роста версии
+_r24()
+_pack24()
+activation.load()
+LIC24.pack, LIC24.version = {"schema": 1, "version": 1, "modules": {"macros": True, "timers": True}}, 1
+activation._REFRESH["tried"] = 0.0
+check("24m12. refresh_on_demand (открытие /setup/moduli): модули обновились без роста версии",
+      run(activation.refresh_on_demand()) == "same" and C.module_on("macros") and C.module_on("timers"))
 # страница модулей сама подтягивает пакет (не ждёт часового цикла) и не чаще раза в REFRESH_ON_DEMAND секунд
 _r24()
 _pack24()

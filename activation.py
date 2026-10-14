@@ -394,6 +394,46 @@ def _note_refresh(res: str, why: str) -> str:
     return res
 
 
+def _sync_modules(st: dict, j: dict) -> str:
+    """Ответ сервера «то же самое» несёт modules / promo_all_modules. Расходятся с пакетом на диске -> переписываем пакет и включаем/гасим модули сразу.
+    -> "none" (полей нет или пакета нет), "same" (совпало), "changed" (обновили), "disk" (модули применены в памяти, а диск не принял)."""
+    mods = j.get("modules")
+    if not isinstance(mods, dict):
+        return "none"
+    promo = j.get("promo_all_modules") is True
+    want = {k: mods[k] for k in C.MODULE_NAMES if isinstance(mods.get(k), bool) and (promo or mods[k])}   # без акции false == «поля нет»
+    try:
+        with open(_path(PACK_NAME), "rb") as f:
+            blob = f.read()
+        pack = sanitize(_decrypt(blob, str(st.get("seed") or ""), str(st.get("yandex_id") or ""), str(st.get("install_id") or "")))
+    except OSError:
+        return "none"
+    if pack is None:
+        return "none"
+    have = {k: v for k, v in (pack.get("modules") or {}).items() if promo or v}
+    if have == want and (pack.get("promo_all_modules") is True) == promo:
+        C.set_modules(want, promo)                  # идемпотентно: память тоже должна совпасть с диском
+        return "same"
+
+    def _patch(d: dict) -> None:
+        if want:
+            d["modules"] = dict(want)
+        else:
+            d.pop("modules", None)
+        if promo:
+            d["promo_all_modules"] = True
+        else:
+            d.pop("promo_all_modules", None)
+
+    _patch(pack)
+    ok = _write_atomic(_path(PACK_NAME), _encrypt(pack, str(st.get("seed")), str(st.get("yandex_id")), str(st.get("install_id"))))
+    for live in (_PENDING["pack"] if _PENDING["has"] else None, C.pack()):    # отложенный пакет и пакет в памяти: иначе граница эпизода откатит модули
+        if isinstance(live, dict) and live:
+            _patch(live)
+    C.set_modules(want, promo)
+    return "changed" if ok else "disk"
+
+
 async def refresh_once() -> str:
     """same | update | revoked | skip | fail. Сбой тихий для клиента: остаётся то, что уже есть. В журнал и в refresh_info() идёт одна строка с причиной (без секретов)."""
     _REFRESH["tried"] = time.time()
@@ -430,7 +470,12 @@ async def refresh_once() -> str:
                 st["pack_version"] = 0
                 _write_state(st)
                 return _note_refresh("same", "ok_same_resync")
-            return _note_refresh("same", "ok_same")
+            # «Без изменений» по версии пакета, но сервер всегда присылает актуальные модули: версия могла не вырасти (правка в базе мимо рубильника),
+            # а модули обязаны доехать. Старый сервер полей не шлёт -> ничего не трогаем.
+            sync = _sync_modules(st, j)
+            if sync == "disk":
+                return _note_refresh("fail", "disk")
+            return _note_refresh("same", "ok_modules" if sync == "changed" else "ok_same")
         pack = sanitize(j.get("pack"))
         if pack is None:
             return _note_refresh("fail", "bad_pack")
