@@ -68,6 +68,8 @@ def compact_user_info(raw: dict) -> dict:
     scenarios = []
     for s in (raw.get("scenarios") or []):
         item = {"id": s["id"], "name": s.get("name", "")}
+        if s.get("is_active") is False:
+            item["inactive"] = True                  # ТЗ-35: неактивный сценарий запустить нельзя; ключ только когда Яндекс прямо сказал false
         if _name_sensitive(item["name"]):
             item["protected"] = True
         scenarios.append(item)
@@ -166,3 +168,94 @@ async def control(target: str, target_id: str, cap_type: str, instance: str, val
     except ValueError:
         pass
     return "ok"
+
+
+# ---------- сценарии как «звонок» (ТЗ-35) ----------
+# Документация Яндекса (user API, «Управление запуском сценария»): POST /v1.0/scenarios/{id}/actions БЕЗ тела, заголовок Authorization: Bearer;
+# 200 {"request_id", "status": "ok"}; ошибка: {"request_id", "status": "error", "message"} с кодом 404 и т.п.
+# Список сценариев: GET /v1.0/user/info -> scenarios: [{id, name, is_active}]. Что внутри сценария (шаги, команда), API НЕ отдаёт.
+SCENARIO_TIMEOUT = 6.0
+_SCENARIO_ID = re.compile(r"[A-Za-z0-9_-]{1,100}")
+CALL_WORDS = ("зайди", "позвони", "звонок", "поговор", "скажи", "навык", "первым", "кореш")
+
+
+def scenario_id_ok(sid) -> bool:
+    return bool(_SCENARIO_ID.fullmatch(str(sid or "")))
+
+
+async def run_scenario(scenario_id: str) -> dict:
+    """Запустить сценарий пользователя по id. Только для «звонка» Кореша: id приходит из нашей же настройки, не от модели.
+    -> {"ok": True} | {"ok": False, "error": no_token|bad_id|auth|not_found|net|error, "message": ...}. Токен и тело ответа в журнал не пишем."""
+    if not C.iot_token():
+        return {"ok": False, "error": "no_token", "message": "умный дом не подключён"}
+    if not scenario_id_ok(scenario_id):
+        return {"ok": False, "error": "bad_id", "message": "неверный id сценария"}
+    try:
+        async with httpx.AsyncClient(timeout=SCENARIO_TIMEOUT, transport=_TRANSPORT) as c:
+            r = await c.post(f"{IOT}/scenarios/{scenario_id}/actions", headers=_auth())
+    except Exception as e:  # noqa: BLE001
+        print(f"iot: запуск сценария: сеть {type(e).__name__}", flush=True)
+        return {"ok": False, "error": "net", "message": "Яндекс не ответил"}
+    if r.status_code in (401, 403):
+        return {"ok": False, "error": "auth", "message": "токен умного дома не принят"}
+    if r.status_code == 404:
+        return {"ok": False, "error": "not_found", "message": "сценарий не найден (удалён или выключен)"}
+    try:
+        body = r.json()
+    except ValueError:
+        body = {}
+    if r.status_code == 200 and (body or {}).get("status") == "ok":
+        return {"ok": True}
+    msg = str((body or {}).get("message") or "")[:120] if isinstance(body, dict) else ""
+    print(f"iot: запуск сценария: Яндекс ответил {r.status_code}", flush=True)
+    return {"ok": False, "error": "error", "message": msg or f"Яндекс ответил {r.status_code}"}
+
+
+async def scenarios_fresh() -> dict:
+    """Свежий список сценариев (мимо кэша): нужен странице настройки «Найти мой сценарий».
+    -> {"ok": True, "scenarios": [{id, name, active, protected}]} | {"ok": False, "error", "message"}."""
+    if not C.iot_token():
+        return {"ok": False, "error": "no_token", "message": "Умный дом ещё не подключён: сначала токен."}
+    try:
+        async with httpx.AsyncClient(timeout=8.0, transport=_TRANSPORT) as c:
+            r = await c.get(f"{IOT}/user/info", headers=_auth())
+    except Exception as e:  # noqa: BLE001
+        print(f"iot: список сценариев: сеть {type(e).__name__}", flush=True)
+        return {"ok": False, "error": "net", "message": "Яндекс не ответил. Попробуй ещё раз."}
+    if r.status_code in (401, 403):
+        return {"ok": False, "error": "auth", "message": "Токен умного дома не принят: истёк или отозван."}
+    if r.status_code != 200:
+        return {"ok": False, "error": "net", "message": "Яндекс ответил ошибкой. Попробуй ещё раз."}
+    try:
+        raw = r.json()
+        compact = compact_user_info(raw)
+        out = []
+        for s in (raw.get("scenarios") or []):
+            name = str(s.get("name", ""))
+            out.append({"id": s["id"], "name": name, "active": s.get("is_active") is not False, "protected": _name_sensitive(name)})
+    except Exception as e:  # noqa: BLE001
+        print(f"iot: список сценариев: разбор {type(e).__name__}", flush=True)
+        return {"ok": False, "error": "net", "message": "Яндекс прислал странный ответ. Попробуй ещё раз."}
+    _remember(compact)
+    _cache.update(ts=time.time(), data=compact)
+    return {"ok": True, "scenarios": out}
+
+
+def rank_call_scenarios(scenarios: list, activation: str, assistant: str = "") -> list:
+    """Угадываем «свой» сценарий по названию: API не показывает команду внутри. Кандидаты только активные и не «замки/ворота».
+    -> [{id, name, score}] от лучшего к худшему."""
+    words = {w for w in re.findall(r"[0-9a-zа-я]{3,}", f"{activation} {assistant}".lower().replace("ё", "е"))}
+    act = re.sub(r"\s+", " ", (activation or "").lower().replace("ё", "е")).strip()
+    res = []
+    for s in scenarios:
+        if not s.get("active") or s.get("protected"):
+            continue
+        n = re.sub(r"\s+", " ", s["name"].lower().replace("ё", "е"))
+        score = 0
+        if act and act in n:
+            score += 4
+        score += 2 * sum(1 for w in words if w in n)
+        score += sum(1 for w in CALL_WORDS if w in n)
+        res.append({"id": s["id"], "name": s["name"], "score": score})
+    res.sort(key=lambda x: (-x["score"], x["name"].lower()))
+    return res

@@ -632,7 +632,93 @@ function stepCheck() {
       if (!r.ok) { out.replaceChildren(note('bad', r.message || 'Тест не прошёл.')); return; }
       out.replaceChildren(note('ok', 'Кореш ответил: «' + r.text + '»'));
     }, 'yel'),
-    out);
+    out,
+    S.modules && S.modules.timers ? callBlock() : null);
+}
+
+const CALLP = 'moduli/call/';
+/* ---------- «Кореш может начинать разговор сам» (ТЗ-35): сценарий-звонок ---------- */
+const CALL_ERR = {auth: 'токен умного дома не принят', not_found: 'сценарий не найден (удалён или выключен в приложении)', net: 'Яндекс не ответил', no_token: 'умный дом не подключён', error: 'Яндекс отклонил запуск'};
+function callBlock() {
+  const box = h('div', {class: 'callbox'}, h('h3', 0, 'Кореш может начинать разговор сам'), h('p', {class: 'small'}, 'Загружаю…'));
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  async function paint(flash) {
+    const r = await api(CALLP + 'state');
+    if (!r.ok) { box.replaceChildren(h('h3', 0, 'Кореш может начинать разговор сам'), note('bad', r.message || 'Не получилось загрузить.')); return; }
+    const out = h('div'), list = h('div'), outT = h('div'), outS = h('div');
+    const act = h('input', {type: 'text', maxlength: 60, value: r.activation, 'aria-label': 'Активационное имя навыка'});
+    const cmd = h('b', {class: 'mono'}, r.command);
+    act.addEventListener('input', () => { cmd.textContent = 'спроси у ' + (act.value.trim() || r.activation) + ' что нового'; });
+    const qf = h('input', {type: 'text', inputmode: 'numeric', maxlength: 2, value: String(r.quiet.from), 'aria-label': 'Не звонить с (час)', style: 'width:4.5em'});
+    const qt = h('input', {type: 'text', inputmode: 'numeric', maxlength: 2, value: String(r.quiet.to), 'aria-label': 'Не звонить до (час)', style: 'width:4.5em'});
+    const en = h('input', {type: 'checkbox'}); en.checked = !!r.enabled;
+    const lastBad = r.last && r.last.ok === false ? note('warn', 'Последний звонок не вышел: ' + (CALL_ERR[r.last.error] || 'ошибка') + '. Напоминание пришло в Телеграм.') : null;
+    box.replaceChildren(
+      h('h3', 0, 'Кореш может начинать разговор сам'),
+      h('p', 0, 'Яндекс не даёт навыку заговорить первым. Обход: Кореш сам запускает твой сценарий в «Доме с Алисой», Станция открывает навык, и Кореш говорит, зачем позвал (например, напоминает). Пока сценарий не настроен, напоминания приходят только в Телеграм.'),
+      flash ? note('ok', flash) : null,
+      !r.iot ? note('warn', 'Сначала подключи умный дом (токен Яндекса): без него я не смогу запустить сценарий.') : null,
+      h('ol', {class: 'steps'},
+        h('li', 0, 'Открой приложение «Дом с Алисой» → «Сценарии» → «+».'),
+        h('li', 0, 'Условие: любое, например фраза «кореш зайди». Само условие нам не нужно: сценарий запустит сервер.'),
+        h('li', 0, 'Действие: выбери свою Станцию → «Вопрос или команда Алисе» и впиши команду: ', cmd,
+          h('div', {class: 'small'}, 'Активационное имя навыка, как в Диалогах:'), act),
+        h('li', 0, 'Сохрани сценарий и вернись сюда: нажми «Найти мой сценарий».')),
+      btn('Найти мой сценарий', async () => {
+        out.replaceChildren(); list.replaceChildren();
+        const f = await api(CALLP + 'find', {activation: act.value});
+        if (!f.ok) { out.replaceChildren(note('bad', f.message || 'Не получилось.')); return; }
+        if (!f.candidates.length) { out.replaceChildren(note('warn', 'Подходящих сценариев не вижу (всего ' + f.total + '). Создай сценарий по шагам выше и нажми ещё раз.')); return; }
+        let chosen = f.suggested || '';
+        const rows = f.candidates.map(c => {
+          const rb = h('input', {type: 'radio', name: 'call-scenario', value: c.id});
+          if (c.id === chosen) rb.checked = true;
+          rb.addEventListener('change', () => { chosen = c.id; });
+          return h('label', {class: 'opt'}, rb, h('span', 0, c.name, c.id === f.suggested ? ' (похоже на твой)' : ''));
+        });
+        list.replaceChildren(
+          note('info', 'Яндекс не показывает, что внутри сценария, поэтому выбираем по названию. Выбери свой и нажми «Проверить звонок»: Станция должна сама заговорить.'),
+          ...rows,
+          btn('Выбрать этот сценарий', async () => {
+            if (!chosen) { out.replaceChildren(note('warn', 'Сначала отметь свой сценарий.')); return; }
+            const s = await api(CALLP + 'select', {id: chosen});
+            if (!s.ok) { out.replaceChildren(note('bad', s.message || 'Не получилось.')); return; }
+            await paint('Сценарий выбран. Нажми «Проверить звонок».');
+          }));
+      }, 'alt'),
+      out, list,
+      r.scenario ? h('div', 0,
+        note('ok', 'Выбран сценарий: «' + (r.scenario.name || 'без названия') + '».'),
+        btn('Проверить звонок', async () => {
+          outT.replaceChildren(note('info', 'Запускаю сценарий… Станция должна сама сказать, что звонок работает.'));
+          const t = await api(CALLP + 'test', {});
+          if (!t.ok) { outT.replaceChildren(note('bad', t.message || 'Не получилось.')); return; }
+          for (let i = 0; i < 20; i++) {
+            const s = await api(CALLP + 'test-status');
+            if (s.status === 'answered') { outT.replaceChildren(note('ok', 'Дозвонился: навык открылся и сказал проверку. Звонок работает.')); return; }
+            if (s.status === 'failed' || s.status === 'no_answer') { outT.replaceChildren(note('bad', s.status === 'failed' ? 'Сценарий не запустился: ' + (s.message || 'ошибка') + '.' : 'Сценарий запустился, но навык не открылся. Проверь в сценарии команду и активационное имя.')); return; }
+            await sleep(2000);
+          }
+          outT.replaceChildren(note('warn', 'Навык пока не открылся. Подожди минуту: если Станция так и не заговорила, проверь команду в сценарии.'));
+        }),
+        btn('Убрать сценарий', async () => { const s = await api(CALLP + 'select', {id: ''}); if (s.ok) await paint('Сценарий убран. Напоминания идут только в Телеграм.'); }, 'alt'),
+        outT) : null,
+      lastBad,
+      r.paused ? note('info', 'Сегодня не звоню (ты просил). Завтра снова.') : null,
+      !r.enabled ? note('info', 'Звонить первым выключено. Включи галочкой ниже или скажи «можешь звонить».') : null,
+      h('h3', 0, 'Когда не звонить'),
+      h('div', {class: 'row2', style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap'}, 'Не звонить с', qf, 'до', qt, 'часов'),
+      h('label', {class: 'opt', style: 'font-weight:400'}, en, h('span', 0, 'Разрешить Корешу звонить первым')),
+      h('p', {class: 'small'}, 'Не чаще раза в 10 минут и шести в час. Голосом: «не звони мне сегодня», «больше не звони первым», «можешь звонить». Не дозвонился за 3 минуты: напоминание придёт в Телеграм.'),
+      btn('Сохранить', async () => {
+        const s = await api(CALLP + 'settings', {quiet_from: qf.value, quiet_to: qt.value, enabled: en.checked});
+        if (!s.ok) { outS.replaceChildren(note('bad', s.message || 'Не получилось.')); return; }
+        outS.replaceChildren(note('ok', 'Сохранено. Применяется сразу.'), s.persisted ? null : note('warn', 'Диск недоступен: настройки живут до перезапуска.'));
+      }, 'alt'),
+      outS);
+  }
+  paint();
+  return box;
 }
 
 /* ---------- 7. WhatsApp (необязательно) ---------- */

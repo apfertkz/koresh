@@ -138,6 +138,10 @@ async def think(history: list[dict], uid: str | None = None) -> str:
     modules.note_turn(uid, _recent_user_text(history, 1))      # считаем реплику; «нет/стоп» стирает черновик макроса или напоминания
     wa_active = wa.available() and not modules.kids_on()
     journal = honesty.Journal(wa_active=wa_active)          # что за этот ход реально сделано с умным домом и WhatsApp
+    ut_now = _recent_user_text(history, 1)                  # просили ли действие: болтовню с «сделал» не подменяем
+    if wa.is_affirmation(ut_now) or modules.current_draft(uid) or wa.current_draft(uid):
+        ut_now = _recent_user_text(history, 3)              # «да» на «Сохранить?» / «Отправить?»: просьба была в предыдущих репликах
+    journal.user_text = ut_now
     tool_list = tools()
     if wa_active:
         wa.note_turn(uid, _recent_user_text(history, 1))      # считаем реплику хозяина; «нет/стоп» стирает черновик
@@ -215,7 +219,8 @@ async def think(history: list[dict], uid: str | None = None) -> str:
                 else:
                     out = "unknown tool"
             except Exception as e:  # noqa: BLE001
-                print(f"tool error [{block.name}]: {type(e).__name__}", flush=True)
+                code = getattr(getattr(e, "response", None), "status_code", "")      # код ответа Яндекса (401 / 429 / 5xx), без токена и без тела
+                print(f"tool error [{block.name}]: {type(e).__name__}" + (f" {code}" if code else ""), flush=True)
                 out = "error: умный дом не ответил"
                 if block.name == "control_device":
                     journal.control(str(a.get("target", "")), out)

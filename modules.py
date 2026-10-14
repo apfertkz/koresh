@@ -19,6 +19,7 @@ import config as C
 import iot
 import memory
 import notify
+import proactive
 import wa
 
 # ---------- лимиты ----------
@@ -422,8 +423,13 @@ async def reminder_draft(uid, kind, text, action, in_minutes, at, day, repeat) -
         return _fail(err)
     when = _when_phrase(fire_at, repeat, hm)
     if kind == "remind":
-        rb = f"Напомню {when}: «{body}». Создать?"
-        must = [body]
+        tip = proactive.hint()              # ТЗ-35: честно, если сценарий-звонок не настроен (раз в сутки)
+        if tip:
+            rb = f"Напомню {when} в Телеграм: «{body}». {tip} Создать?"
+            must = [body, "сценарий-звонок"]
+        else:
+            rb = f"Напомню {when}: «{body}». Создать?"
+            must = [body]
     else:
         rb = f"{when[0].upper() + when[1:]} сделаю: {label}. Создать?"
         must = [label]
@@ -496,9 +502,10 @@ async def run_due(now: float | None = None) -> int:
         if r["kind"] == "remind":
             if stale:
                 txt = f"Пропустил напоминание: «{r['text']}». Меня не было на связи, извини."
+                await notify.send_owner("reminder", txt)        # опоздали больше чем на 2 часа: звонить поздно, только сообщение
             else:
                 txt = f"Напоминание: {r['text']}"
-            await notify.send_owner("reminder", txt)
+                await proactive.deliver("reminder", txt, item=r["text"])      # ТЗ-35: позвонить на Станцию, а нет -- сообщение как раньше
         else:
             a = r["action"] or {}
             label = a.get("label", "действие")
@@ -507,10 +514,11 @@ async def run_due(now: float | None = None) -> int:
                 continue
             out = await _run_action(a, "")
             if (out or "").strip() == "ok":
-                await notify.send_owner("timer_done", f"Сделал по расписанию: {label}.")
+                txt = f"Сделал по расписанию: {label}."
             else:
                 import honesty
-                await notify.send_owner("timer_done", f"Не вышло по расписанию: {label}. Причина: {honesty.reason_of(out)}.")
+                txt = f"Не вышло по расписанию: {label}. Причина: {honesty.reason_of(out)}."
+            await proactive.deliver("timer_done", txt, item=txt)
     return fired
 
 
@@ -521,6 +529,10 @@ async def scheduler_loop() -> None:
                 await run_due()
             except Exception as e:  # noqa: BLE001
                 print(f"modules: планировщик споткнулся ({type(e).__name__})", flush=True)
+            try:
+                await proactive.tick()          # не дозвонились за 3 минуты -> Телеграм и WhatsApp (ТЗ-35)
+            except Exception as e:  # noqa: BLE001
+                print(f"modules: просроченные звонки споткнулись ({type(e).__name__})", flush=True)
             await asyncio.sleep(TICK_SEC)
     except asyncio.CancelledError:
         raise

@@ -2638,6 +2638,9 @@ exec(compile((HERE / "selftest_modules.py").read_text(encoding="utf-8"), "selfte
 # ================= 25. «Мой Кореш» (ТЗ-34): голосовая ссылка на настройки, адрес сервера серверу лицензий, страница /setup/moduli: код в selftest_moy.py =================
 exec(compile((HERE / "selftest_moy.py").read_text(encoding="utf-8"), "selftest_moy.py", "exec"), globals())
 
+# ================= 26. «Кореш говорит первым» (ТЗ-35): звонок на Станцию через сценарий Алисы, очередь, тихие часы, лимиты, голосовые команды, страницы: код в selftest_proactive.py =================
+exec(compile((HERE / "selftest_proactive.py").read_text(encoding="utf-8"), "selftest_proactive.py", "exec"), globals())
+
 # ================= 14. Dockerfile копирует каждый модуль (новый файл не должен выпасть из образа) =================
 _copy = next(l for l in (HERE / "Dockerfile").read_text(encoding="utf-8").splitlines() if l.startswith("COPY ") and ".py" in l)
 _mods = {f.name for f in HERE.glob("*.py") if not f.name.startswith("selftest")}

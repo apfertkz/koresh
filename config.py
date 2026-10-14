@@ -16,7 +16,8 @@ VERSION = os.environ.get("APP_VERSION", "dev")
 
 # Что можно задать через /setup и хранить в config.json. Ключ Anthropic и секрет вебхука сюда НЕ входят: только переменные.
 STORED_KEYS = ("YANDEX_IOT_TOKEN", "ASSISTANT_NAME", "TONE", "GENDER", "HOUSEHOLD", "BLOCKED_NAMES",
-               "LOCK_PHRASE", "ALLOW_LOCKS", "WA_CONTACTS", "WA_HIDDEN", "WA_NICKS", "TZ_OFFSET", "KIDS_PHRASE")
+               "LOCK_PHRASE", "ALLOW_LOCKS", "WA_CONTACTS", "WA_HIDDEN", "WA_NICKS", "TZ_OFFSET", "KIDS_PHRASE",
+               "CALL_SCENARIO", "CALL_SCENARIO_NAME", "CALL_QUIET")
 SECRET_KEYS = ("YANDEX_IOT_TOKEN", "LOCK_PHRASE", "WA_CONTACTS", "WA_HIDDEN", "WA_NICKS", "KIDS_PHRASE")          # значения этих ключей не показываем и не логируем
 _CFG = {"sig": None, "data": None}                        # кэш файла по отпечатку (inode, mtime, размер)
 _MEM_ONLY: dict = {}                                       # копия, если диск недоступен: живёт до перезапуска

@@ -25,6 +25,7 @@ import config as C
 import iot
 import memory
 import modules
+import proactive
 import prompts
 import usage
 import wa
@@ -709,6 +710,116 @@ async def moduli_settings(request: Request):
 async def moduli_topup(request: Request):
     _need_mod(request)
     return _do_topup(await _body(request))
+
+
+# ---------- «Кореш может начинать разговор сам» (ТЗ-35): сценарий-звонок ----------
+# Все ручки доступны и мастеру (/setup), и странице модулей (/setup/moduli): те же права, что у настроек модулей. Звонок -- часть модуля «Напоминания».
+def _call_state() -> dict:
+    st = proactive.status()
+    st["activation"] = proactive.skill_activation()
+    st["command"] = "спроси у " + st["activation"] + " что нового"
+    st["assistant"] = C.assistant_name()
+    return st
+
+
+def _need_call_module():
+    if not proactive.module_on():
+        return _json_err(403, "no_module", "Модуль «Напоминания и таймеры» не подключён: звонить первым нечем.")
+    return None
+
+
+@router.get("/setup/api/moduli/call/state")
+async def call_state(request: Request):
+    _need_mod(request)
+    return _json_ok(**_call_state())
+
+
+@router.post("/setup/api/moduli/call/find")
+async def call_find(request: Request):
+    """«Найти мой сценарий». API Яндекса отдаёт у сценария только id, название и «активен»: что внутри (команду запуска навыка) не видно,
+    поэтому ищем по названию, лучший кандидат отмечен, выбирает человек, потом «Проверить звонок» доказывает, что он тот."""
+    _need_mod(request)
+    data = await _body(request)
+    err = _need_call_module()
+    if err is not None:
+        return err
+    res = await iot.scenarios_fresh()
+    if not res["ok"]:
+        return _json_err(400 if res["error"] in ("no_token", "auth") else 502, res["error"], res["message"])
+    activation_name = _clean_line(data.get("activation"), 60) or proactive.skill_activation()
+    ranked = iot.rank_call_scenarios(res["scenarios"], activation_name, C.assistant_name())
+    top = ranked[0] if ranked else None
+    suggested = top["id"] if top and top["score"] >= 2 and (len(ranked) == 1 or top["score"] > ranked[1]["score"]) else ""
+    hidden = sum(1 for x in res["scenarios"] if not x["active"] or x["protected"])
+    return _json_ok(candidates=[{"id": x["id"], "name": x["name"], "score": x["score"]} for x in ranked[:30]], suggested=suggested,
+                    total=len(res["scenarios"]), hidden=hidden, selected=proactive.scenario_id())
+
+
+@router.post("/setup/api/moduli/call/select")
+async def call_select(request: Request):
+    """Выбрать сценарий-звонок. Пустой id -- убрать. Замки/ворота/сигнализацию и неактивные выбрать нельзя: звонок запускается без вопросов."""
+    _need_mod(request)
+    data = await _body(request)
+    err = _need_call_module()
+    if err is not None:
+        return err
+    sid = str(data.get("id") or "").strip()
+    if not sid:
+        persisted = C.save_values({"CALL_SCENARIO": None, "CALL_SCENARIO_NAME": None})
+        return _json_ok(persisted=persisted, **_call_state())
+    if not iot.scenario_id_ok(sid):
+        return _json_err(400, "bad_id", "Это не похоже на id сценария.")
+    res = await iot.scenarios_fresh()
+    if not res["ok"]:
+        return _json_err(400 if res["error"] in ("no_token", "auth") else 502, res["error"], res["message"])
+    item = next((x for x in res["scenarios"] if x["id"] == sid), None)
+    if item is None:
+        return _json_err(404, "not_found", "Такого сценария нет в твоём умном доме. Нажми «Найти мой сценарий» ещё раз.")
+    if item["protected"]:
+        return _json_err(400, "protected", "Этот сценарий похож на замок, ворота или сигнализацию. Звонок запускается сам, без вопросов, поэтому такой выбрать нельзя.")
+    if not item["active"]:
+        return _json_err(400, "inactive", "Этот сценарий выключен в приложении: Яндекс не даст его запустить. Включи его там.")
+    persisted = C.save_values({"CALL_SCENARIO": sid, "CALL_SCENARIO_NAME": _clean_line(item["name"], 80)})
+    print("setup: сценарий-звонок выбран", flush=True)
+    return _json_ok(persisted=persisted, overridden=C.source("CALL_SCENARIO") == "env", **_call_state())
+
+
+@router.post("/setup/api/moduli/call/test")
+async def call_test(request: Request):
+    _need_mod(request)
+    err = _need_call_module()
+    if err is not None:
+        return err
+    res = await proactive.test_call()
+    if not res["ok"]:
+        return _json_err(429 if res["error"] == "too_fast" else 400, res["error"], res["message"])
+    return _json_ok(started=True)
+
+
+@router.get("/setup/api/moduli/call/test-status")
+async def call_test_status(request: Request):
+    _need_mod(request)
+    return _json_ok(**proactive.test_status())
+
+
+@router.post("/setup/api/moduli/call/settings")
+async def call_settings(request: Request):
+    """Тихие часы и общий выключатель «звонить первым»."""
+    _need_mod(request)
+    data = await _body(request)
+    err = _need_call_module()
+    if err is not None:
+        return err
+    upd = {}
+    if data.get("quiet_from") not in (None, "") or data.get("quiet_to") not in (None, ""):
+        val, bad = proactive.parse_quiet(data.get("quiet_from"), data.get("quiet_to"))
+        if bad:
+            return _json_err(400, "bad_quiet", bad)
+        upd["CALL_QUIET"] = val
+    if isinstance(data.get("enabled"), bool):
+        proactive.set_enabled(data["enabled"])
+    persisted = C.save_values(upd) if upd else True
+    return _json_ok(persisted=persisted, **_call_state())
 
 
 @router.get("/setup/api/heard")

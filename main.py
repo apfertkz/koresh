@@ -18,6 +18,7 @@ import history
 import memory
 import modules
 import notify
+import proactive
 import prompts
 import setupwiz
 import summarize
@@ -52,6 +53,7 @@ class UserState:
     inflight: object = None        # asyncio.Task мозга, ещё думающая
     gen: int = 0                   # номер реплики: фоновое закрытие эпизода отменяется, если пришла новая
     closing: object = None         # asyncio.Task фонового закрытия эпизода (пересказ haiku)
+    spoken_first: str = ""         # что Кореш сказал сам, начав разговор (ТЗ-35): уйдёт в историю перед следующей репликой хозяина
 
 
 STATE: dict[str, UserState] = {}
@@ -102,6 +104,11 @@ def begin_turn(st: UserState, p: str) -> int:
         activation.apply_pending()       # и где применяется обновлённый пакет активации (промпт внутри эпизода стабилен)
         st.recap = store.render_summaries()
         st.dialog = history.fresh_episode(store.render_block())
+    if st.spoken_first:                  # Кореш заговорил первым (звонок/напоминание): модель должна знать, с чего начался разговор
+        st.dialog.append({"role": "user", "content": [{"type": "text", "text":
+            "[Служебно, не реплика хозяина: ты сам начал этот разговор и только что сказал вслух: «" + st.spoken_first + "». Дальше обычный разговор.]"}]})
+        st.dialog.append({"role": "assistant", "content": history.ACK})
+        st.spoken_first = ""
     st.dialog.append({"role": "user", "content": p})
     return len(st.dialog) - 1
 
@@ -274,7 +281,7 @@ SETTINGS_SAY = {
 }
 
 
-async def handle(uid: str, phrase: str, new_session: bool) -> dict:
+async def _handle(uid: str, phrase: str, new_session: bool) -> dict:
     st = state_for(uid)
     p = phrase.strip()
     low = p.lower()
@@ -318,6 +325,37 @@ async def handle(uid: str, phrase: str, new_session: bool) -> dict:
     except Exception as e:  # noqa: BLE001  ошибка API не должна превращаться в 500
         st.inflight = None
         return alice_reply(brain_error_text(e))
+
+
+def _prefixed(res: dict, spoken: str) -> dict:
+    """Кореш начал разговор сам (ТЗ-35), а хозяин в первой же реплике что-то сказал: сперва то, с чего начали, потом ответ."""
+    r = res["response"]
+    return alice_reply(spoken + "\n" + r["text"], end=bool(r.get("end_session")))
+
+
+async def handle(uid: str, phrase: str, new_session: bool) -> dict:
+    """Вход реплики. Над мозгом стоит «Кореш говорит первым» (ТЗ-35): голосовые «не звони»/«можешь звонить» и первая фраза после звонка
+    (готовый текст события, без модели: у навыка на ответ 4,5 с)."""
+    low = phrase.strip().lower()
+    if low == "ping":
+        return await _handle(uid, phrase, new_session)
+    selftest = uid == setupwiz.SELFTEST_UID            # проверка мастера /setup: чужой звонок она не забирает
+    if not selftest:
+        proactive.note_activity()
+    if STOP_RE.fullmatch(low):
+        proactive.note_end()
+        return await _handle(uid, phrase, new_session)
+    if not selftest:
+        cmd = proactive.command(low)
+        if cmd:
+            return alice_reply(proactive.apply_command(cmd))
+    spoken = None if selftest else proactive.claim(new_session)
+    if not spoken:
+        return await _handle(uid, phrase, new_session)
+    state_for(uid).spoken_first = spoken
+    if not phrase.strip():
+        return alice_reply(spoken)
+    return _prefixed(await _handle(uid, phrase, new_session), spoken)
 
 
 @app.post("/alice/{secret}")
