@@ -884,8 +884,9 @@ with _TC22(main.app) as tcl:
     check("22k2. согласие обязательно: accepted=false / пусто -> 400, согласие не записано", r1.status_code == 400 and r1b.status_code == 400 and not wa.consent_given())
     st = tcl.get("/setup/api/wa/state").json()
     check("22k3. состояние до согласия: текст риска с сервера дословно из ТЗ, согласия нет",
-          st["consent"] is False and st["consent_text"].startswith("WhatsApp подключается неофициально, как WhatsApp Web.")
-          and "почти невозможно" in st["consent_text"] and "второй номер" in st["consent_text"] and "только после твоего «да»" in st["consent_text"])
+          st["consent"] is False and st["consent_text"].startswith("Насколько это безопасно.")
+          and "связанное устройство" in st["consent_text"] and "рассылки" in st["consent_text"] and "10 сообщений в час" in st["consent_text"]
+          and "неофициально" not in st["consent_text"] and "почти невозможно" not in st["consent_text"] and "только после твоего «да»" in st["consent_text"])
     r2 = tcl.post("/setup/api/wa/consent", json={"accepted": True})
     check("22k4. согласие принято (на диск), демон-сайдкар запущен", r2.status_code == 200 and wa.consent_given() and wa.running()
           and oct((WAD / "state.json").stat().st_mode & 0o777) == "0o600")
@@ -1036,7 +1037,7 @@ else:
         calls = lambda i: [c["k"] for c in R22[i]["calls"]]       # noqa: E731
         check("22l3. согласие обязательно на странице: без галочки «Показать QR-код» не зовёт ни wa/consent, ни wa/link, а говорит «Без галочки…»; текст риска показан",
               "wa/consent" not in calls(0) and "wa/link" not in calls(0) and "Без галочки WhatsApp не подключаем" in t1
-              and "WhatsApp подключается неофициально, как WhatsApp Web." in t1 and "второй номер" in t1, str(calls(0)))
+              and "Насколько это безопасно." in t1 and "рассылки" in t1 and "Понятно: пишу своим людям, без рассылок" in t1, str(calls(0)))
         imgs2 = [n for n in _nodes(R22[1]["tree"], "img")]
         cons = [c for c in R22[1]["calls"] if c["k"] == "wa/consent"]
         check("22l4. с галочкой: ушёл wa/consent {accepted:true}, затем опрос wa/link, QR показан картинкой, есть инструкция «Связанные устройства»",

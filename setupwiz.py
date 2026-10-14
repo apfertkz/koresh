@@ -831,7 +831,7 @@ def _wa_needs() -> JSONResponse | None:
         return _json_err(400, "wa_off", "WhatsApp в этой сборке выключен." if not C.wa_enabled()
                          else "WhatsApp в этом образе недоступен.")
     if not wa.consent_given():
-        return _json_err(403, "need_consent", "Сначала согласись с риском.")
+        return _json_err(403, "need_consent", "Сначала поставь галочку: пишу своим людям, без рассылок.")
     return None
 
 
@@ -848,10 +848,10 @@ async def wa_consent(request: Request):
     if not wa.enabled():
         return _json_err(400, "wa_off", "WhatsApp в этом образе недоступен.")
     if d.get("accepted") is not True:
-        return _json_err(400, "need_consent", "Без согласия с риском WhatsApp не подключается.")
+        return _json_err(400, "need_consent", "Без галочки WhatsApp не подключается.")
     wa.give_consent()
     wa.ensure_started()
-    print("setup: согласие на риск WhatsApp получено", flush=True)
+    print("setup: согласие по правилам WhatsApp получено", flush=True)
     return _json_ok(**await wa_public())
 
 

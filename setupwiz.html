@@ -41,7 +41,7 @@ input[type=radio],input[type=checkbox]{width:20px;height:20px;accent-color:var(-
 .opt{display:flex;gap:12px;align-items:flex-start;border:var(--line);background:#fff;padding:10px 12px;margin:8px 0;cursor:pointer}
 .opt.sel{background:var(--yellow)}
 .opt b{display:block}
-.note{border:var(--line);padding:10px 14px;margin:12px 0;font-weight:600}
+.note{border:var(--line);padding:10px 14px;margin:12px 0;font-weight:600;white-space:pre-line}
 .note.ok{background:#dcefe2;border-color:var(--green)}
 .note.bad{background:#f9d9d2;border-color:var(--red)}
 .note.warn{background:var(--yellow)}
@@ -689,9 +689,9 @@ function waLink(box, W, only) {
     box.replaceChildren(
       h('h3', 0, 'Привязка'),
       note('warn', W.consent_text),
-      h('label', {class: 'opt', style: 'font-weight:700'}, cb, h('span', 0, 'Я понимаю риск и хочу подключить WhatsApp')),
+      h('label', {class: 'opt', style: 'font-weight:700'}, cb, h('span', 0, 'Понятно: пишу своим людям, без рассылок')),
       btn('Показать QR-код', async () => {
-        if (!cb.checked) { out.replaceChildren(note('bad', 'Без галочки WhatsApp не подключаем: прочитай предупреждение и согласись с риском.')); return; }
+        if (!cb.checked) { out.replaceChildren(note('bad', 'Без галочки WhatsApp не подключаем: прочитай, чего не делать, и поставь галочку.')); return; }
         const r = await api('wa/consent', {accepted: true});
         if (!r.ok) { out.replaceChildren(note('bad', r.message || 'Не получилось.')); return; }
         W.consent = true;
