@@ -2225,7 +2225,7 @@ os.environ["ASSISTANT_NAME"] = "Гоша"
 check("20q. переменная Railway главнее пакета", C.assistant_name() == "Гоша" and C.source("ASSISTANT_NAME") == "env")
 os.environ.pop("ASSISTANT_NAME")
 C.save_values({"ASSISTANT_NAME": "Конфиг", "TONE": "vezhlivyy"})
-check("20r. пакет главнее config.json", C.assistant_name() == "Борис" and C.tone() == "derzkiy_mat")
+check("20r. ручной выбор на /setup (config.json) главнее пакета", C.assistant_name() == "Конфиг" and C.tone() == "vezhlivyy" and C.source("TONE") == "setup")
 C.save_values({"ASSISTANT_NAME": None, "TONE": None})
 SYS20 = []
 brain._create = stub("ок", log=SYS20)

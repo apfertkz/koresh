@@ -107,9 +107,11 @@ def source(name: str) -> str:
     """Откуда берётся значение: env (переменная Railway) | setup (config.json) | default."""
     if (os.environ.get(name) or "").strip():
         return "env"
+    if name in STORED_KEYS and stored(name):
+        return "setup"
     if name in PACK_KEYS and _PACK.get(name):
         return "pack"
-    return "setup" if name in STORED_KEYS and stored(name) else "default"
+    return "default"
 
 
 def _write_config(data: dict) -> bool:
@@ -171,10 +173,10 @@ def set_setup_done(done: bool) -> bool:
 
 def env(name: str, default: str = "") -> str:
     v = (os.environ.get(name) or "").strip()
+    if not v and name in STORED_KEYS:              # ручной выбор хозяина на /setup главнее пакета активации
+        v = stored(name)
     if not v and name in PACK_KEYS:
         v = str(_PACK.get(name) or "").strip()
-    if not v and name in STORED_KEYS:
-        v = stored(name)
     return v or default.strip()
 
 
