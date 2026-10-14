@@ -476,7 +476,7 @@ function modulesBlock() {
   const out = h('div');
   const tz = h('input', {type: 'text', inputmode: 'decimal', maxlength: 5, value: String(S.tz_offset.value), 'aria-label': 'Часовой пояс'});
   const kp = h('input', {type: 'password', autocomplete: 'new-password', maxlength: 80,
-    placeholder: S.kids_phrase.set ? 'Фраза задана. Оставь пустым, чтобы не менять' : 'Кодовая фраза взрослого (минимум 6 символов)', 'aria-label': 'Кодовая фраза взрослого'});
+    placeholder: S.kids_phrase.set ? 'Фраза задана. Оставь пустым, чтобы не менять' : 'Кодовая фраза взрослого (минимум 2 слова)', 'aria-label': 'Кодовая фраза взрослого'});
   const kc = h('input', {type: 'checkbox'});
   return h('div', 0,
     h('h3', 0, 'Модули'),
@@ -485,8 +485,9 @@ function modulesBlock() {
     m.kids ? h('div', 0,
       h('label', 0, 'Кодовая фраза взрослого для детского режима'), kp,
       S.kids_phrase.set ? h('label', {class: 'opt', style: 'font-weight:400'}, kc, h('span', 0, 'Стереть сохранённую фразу')) : null,
-      h('p', {class: 'small'}, 'Без этой фразы детский режим выключается словами «выключи детский режим» и ответом «да» на вопрос «ты взрослый?». Фраза нигде не показывается.')) : null,
+      h('p', {class: 'small'}, 'Без этой фразы детский режим не включится: сначала задай её. Выключается только её произнесением. Не говори её при детях. Минимум два слова, например «синяя ромашка». Три неверные попытки подряд, и Кореш на 10 минут перестаёт принимать выключение. Фраза нигде не показывается.')) : null,
     btn('Сохранить модули', async () => {
+      if (kp.value.trim() && kp.value.trim().split(/\s+/).filter(Boolean).length < 2) { out.replaceChildren(note('bad', 'Кодовая фраза взрослого: минимум два слова.')); return; }
       const r = await api('modules', {tz_offset: m.timers ? tz.value : '', kids_phrase: kp.value, clear_kids_phrase: kc.checked});
       kp.value = '';
       if (!r.ok) { out.replaceChildren(note('bad', r.message || 'Не получилось.')); return; }

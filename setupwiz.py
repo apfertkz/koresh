@@ -24,6 +24,7 @@ import brain
 import config as C
 import iot
 import memory
+import modules
 import prompts
 import usage
 import wa
@@ -572,11 +573,12 @@ async def modules_settings(request: Request):
         upd["TZ_OFFSET"] = ("%g" % tz) if tz != 5.0 else None          # 5 = умолчание, в файл не пишем
     if d.get("clear_kids_phrase"):
         upd["KIDS_PHRASE"] = None
+        modules.kids_force_off()          # без фразы детский режим жить не должен: иначе его некому выключить
     else:
         phrase = _clean_line(d.get("kids_phrase"), 80)
         if phrase:
-            if len(phrase) < 6:
-                return _json_err(400, "short_phrase", "Кодовая фраза взрослого: минимум шесть символов, лучше длинная.")
+            if len(phrase) < 6 or not modules.kids_phrase_ok(phrase):
+                return _json_err(400, "short_phrase", "Кодовая фраза взрослого: минимум два слова и шесть символов, лучше длинная. Одно слово ребёнок угадает.")
             if _same_phrase(phrase, C.lock_phrase()):
                 return _json_err(400, "same_phrase", "Эта фраза уже стоит на замках. Придумай другую.")
             upd["KIDS_PHRASE"] = phrase

@@ -637,6 +637,16 @@ P_MAT24 = prompts.system_prompt()
 check("24d1. модуль включён, режим выключен: тон прежний (мат остался у взрослого), в промпте только правило, как включать",
       bool(MAT_RE.search(P_MAT24)) and "kids_mode" in P_MAT24 and "ДЕТСКИЙ РЕЖИМ. Сейчас" not in P_MAT24)
 fresh("d2")
+# ТЗ-34: без кодовой фразы взрослого детский режим не включается (ни через мозг, ни напрямую; одно слово тоже не фраза)
+S = Script24(tr("t1", "kids_mode", {"on": True, "child_name": "Алия"}), text_resp("Сначала задай кодовую фразу взрослого на странице настройки, без неё детский режим не включаю."))
+brain._create = S
+say24("d0", "включи детский режим, ребёнка зовут Алия")
+check("24d0a. фраза не задана -> «включи детский режим» не включает, инструмент возвращает причину и текст для ответа, на диске режима нет",
+      not modules.kids_on() and any("need_kids_phrase" in x and "Сначала задай кодовую фразу взрослого" in x for x in S.tool_results()) and not disk24().get("kids", {}).get("on"), str(S.tool_results()))
+os.environ["KIDS_PHRASE"] = "ромашка"
+check("24d0b. фраза из одного слова за фразу не считается -> не включается", not modules.kids_set("d0", True, "Алия", "").ok and not modules.kids_on())
+os.environ["KIDS_PHRASE"] = GOOD_PHRASE24
+fresh("d2")
 S = Script24(tr("t1", "kids_mode", {"on": True, "child_name": "Алия"}), text_resp("Включил детский режим. Привет, Алия! Хочешь сказку?"))
 brain._create = S
 t = say24("d2", "включи детский режим, ребёнка зовут Алия")
@@ -695,25 +705,51 @@ check("24d14. кодовая фраза взрослого -> режим вык�
 check("24d15. фраза не светится ни в промпте, ни в ответах инструментов, ни в config.json-значениях /health",
       GOOD_PHRASE24 not in prompts.system_prompt() and GOOD_PHRASE24 not in json.dumps(S.tool_results()) and "KIDS_PHRASE" in C.SECRET_KEYS)
 check("24d16. режим выключен -> промпт снова взрослый с матом (тон не потерян)", bool(MAT_RE.search(prompts.system_prompt())) and "ДЕТСКИЙ РЕЖИМ. Сейчас" not in prompts.system_prompt())
-# без фразы: «ты взрослый?»
-os.environ.pop("KIDS_PHRASE")
+# ТЗ-34: «я взрослый» не выключает; три неверные попытки подряд -> 10 минут игнора
+os.environ["KIDS_PHRASE"] = GOOD_PHRASE24
 modules.kids_set("d3", True, "Тимур", "")
-S = Script24(tr("t1", "kids_mode", {"on": False}), tr("t2", "kids_mode", {"on": False}), text_resp("Ты взрослый?"))
+S = Script24(tr("t1", "kids_mode", {"on": False}), tr("t2", "kids_mode", {"on": False}), text_resp("Режим остаётся включённым."))
 brain._create = S
 fresh("d3")
 say24("d3", "выключи детский режим")
-check("24d17. без фразы: первый вызов (и повторный в той же реплике) -> «спроси: ты взрослый?», режим включён",
-      modules.kids_on() and sum("confirm_adult" in x for x in S.tool_results()) == 2, str(S.tool_results()))
+check("24d17. нет фразы в реплике -> выключение отказано, режим включён (две пробы модели в одной реплике считаются как одна попытка)",
+      modules.kids_on() and sum("need_phrase" in x for x in S.tool_results()) == 2 and disk24()["kids"]["fails"] == 1, str(S.tool_results()) + str(disk24()))
+S = Script24(tr("t1", "kids_mode", {"on": False}), text_resp("Режим остаётся включённым."))
+brain._create = S
+say24("d3", "да я взрослый")
+check("24d18. «да я взрослый» (и «ты взрослый?» — «да») режим НЕ выключает", modules.kids_on() and any("need_phrase" in x for x in S.tool_results()) and disk24()["kids"]["fails"] == 2)
+S = Script24(tr("t1", "kids_mode", {"on": False}), text_resp("Режим остаётся включённым."))
+brain._create = S
+say24("d3", "выключи, я мама")
+check("24d19. третья неверная попытка подряд -> пауза 10 минут на диске, режим включён",
+      modules.kids_on() and disk24()["kids"]["fails"] >= 3 and abs(disk24()["kids"]["pause_until"] - (CLK24["t"] + 600)) < 2, str(disk24()))
+S = Script24(tr("t1", "kids_mode", {"on": False}), text_resp("Режим остаётся включённым."))
+brain._create = S
+say24("d3", f"выключи детский режим, {GOOD_PHRASE24}")
+check("24d19a. в паузе даже верная фраза игнорируется (ответ инструмента kids_paused, фраза не подсказана)",
+      modules.kids_on() and any("kids_paused" in x for x in S.tool_results()) and GOOD_PHRASE24 not in json.dumps(S.tool_results()))
+modules.reload()
+check("24d19b. пауза переживает перезапуск (лежит на диске)", modules.kids_on() and not modules.kids_set("d3", False, None, GOOD_PHRASE24).ok and modules.kids_on())
+CLK24["t"] += 599
+check("24d19c. через 9:59 пауза ещё действует", not modules.kids_set("d3", False, None, GOOD_PHRASE24).ok and modules.kids_on())
+CLK24["t"] += 2
 S = Script24(tr("t1", "kids_mode", {"on": False}), text_resp("Режим выключен."))
 brain._create = S
-say24("d3", "да")
-check("24d18. «да» в следующей реплике -> выключен", not modules.kids_on())
+say24("d3", f"выключи детский режим, {GOOD_PHRASE24}")
+check("24d19d. пауза вышла -> верная фраза выключает, счётчик сброшен", not modules.kids_on() and disk24()["kids"]["fails"] == 0 and "pause_until" not in disk24()["kids"], str(disk24()))
+modules.kids_set("d5", True, None, "")
+for t_ in ("нет", "да взрослый"):
+    modules.TURNS["d5"] = modules.TURNS.get("d5", 0) + 1
+    modules.kids_set("d5", False, None, t_)
+modules.TURNS["d5"] += 1
+modules.kids_set("d5", False, None, GOOD_PHRASE24)                      # верная фраза: режим выключен, счётчик сброшен
+modules.kids_set("d5", True, None, "")
+for t_ in ("нет", "нет"):
+    modules.TURNS["d5"] += 1
+    modules.kids_set("d5", False, None, t_)
+check("24d19e. ошибки считаются подряд: две ошибки, успех, снова включили и две ошибки -> счётчик 2, паузы нет", modules.kids_on() and "pause_until" not in disk24()["kids"] and disk24()["kids"]["fails"] == 2, str(disk24()))
+modules.kids_set("d5", False, None, GOOD_PHRASE24)
 modules.kids_set("d4", True, None, "")
-modules.TURNS["d4"] = 1
-modules.kids_set("d4", False, None, "выключи")
-modules.TURNS["d4"] = 2
-r = modules.kids_set("d4", False, None, "нет, не взрослый")
-check("24d19. на «ты взрослый?» ответили «нет» -> остаётся включённым", modules.kids_on() and not r.ok)
 # запоминается между разговорами
 modules.reload()
 check("24d20. детский режим запомнился между разговорами и перезапусками (читается с диска)", modules.kids_on())
@@ -806,13 +842,19 @@ check("24f2. пояс и фраза сохраняются, применяютс
 check("24f3. сама фраза нигде не отдаётся страницей", GOOD_PHRASE24 not in json.dumps(st) and GOOD_PHRASE24 not in r.text)
 bad = [tcm.post("/setup/api/modules", json=x).status_code for x in ({"tz_offset": "abc"}, {"tz_offset": "99"}, {"kids_phrase": "abc"})]
 check("24f4. кривой пояс и слишком короткая фраза -> 400", bad == [400, 400, 400], str(bad))
+r1 = tcm.post("/setup/api/modules", json={"kids_phrase": "односложнаяфраза"})
+check("24f4a. фраза из одного слова (даже длинного) на /setup отклоняется: минимум два слова", r1.status_code == 400 and r1.json()["error"] == "short_phrase" and C.kids_phrase() == GOOD_PHRASE24, r1.text)
 os.environ["LOCK_PHRASE"] = "замочная фраза"
 rs = tcm.post("/setup/api/modules", json={"kids_phrase": "Замочная   фраза!"})
 check("24f5. фраза взрослого не может совпадать с фразой от замков (ребёнок её не должен знать из-за замков)", rs.status_code == 400 and rs.json()["error"] == "same_phrase", rs.text)
 os.environ.pop("LOCK_PHRASE")
+modules.kids_set("f1", True, None, "")
 tcm.post("/setup/api/modules", json={"clear_kids_phrase": True, "tz_offset": "5"})
+check("24f6a. взрослый стёр фразу на /setup -> детский режим заодно выключен (без фразы он не живёт)", not modules.kids_on())
 check("24f6. «стереть фразу» и пояс 5 -> настройки сброшены", C.kids_phrase() == "" and C.tz_offset() == 5.0)
 html24 = (HERE / "setupwiz.html").read_text(encoding="utf-8")
+check("24f7a. рядом с полем фразы подсказка «Не говори её при детях», минимум два слова, проверка в браузере до отправки; про «ты взрослый?» ни слова",
+      "Не говори её при детях" in html24 and "минимум 2 слова" in html24 and "length < 2" in html24 and "ты взрослый" not in html24)
 check("24f7. страница показывает блок «Модули» только когда модуль включён (modulesBlock в шаге 4)", "function modulesBlock()" in html24 and "if (!m.timers && !m.kids) return null" in html24)
 setupwiz.reset_for_tests()
 C.set_setup_done(False)

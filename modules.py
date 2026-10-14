@@ -50,14 +50,14 @@ def _now() -> float:
 _S = {"path": "", "data": None}
 DRAFTS: dict = {}
 TURNS: dict = {}
-ADULT: dict = {}                 # uid -> номер реплики, на которой спросили «ты взрослый?»
+FAIL_TURN: dict = {}             # uid -> номер реплики, на которой уже засчитана неверная попытка (в одной реплике считаем раз)
 
 
 def reset_for_tests() -> None:
     _S.update(path="", data=None)
     DRAFTS.clear()
     TURNS.clear()
-    ADULT.clear()
+    FAIL_TURN.clear()
 
 
 def reload() -> None:
@@ -192,14 +192,13 @@ async def _run_action(a: dict, user_text: str) -> str:
 
 # ---------- ход диалога: черновики ----------
 def note_turn(uid, user_text: str) -> None:
-    """Начало хода мозга: считаем реплику хозяина; «нет/стоп/отмена» стирает черновик и вопрос «ты взрослый?»."""
+    """Начало хода мозга: считаем реплику хозяина; «нет/стоп/отмена» стирает черновик."""
     k = uid or "-"
     TURNS[k] = TURNS.get(k, 0) + 1
     if wa.NEG_RE.search(user_text or "") and not wa.is_affirmation(user_text):
         if k in DRAFTS:
             DRAFTS.pop(k, None)
             print("modules: черновик отменён словом хозяина", flush=True)
-        ADULT.pop(k, None)
 
 
 def current_draft(uid):
@@ -581,38 +580,68 @@ def kids_gate(target: str, item: dict) -> str | None:
     return "kids_only_light: в детском режиме можно управлять только светом, остальное попроси у взрослых"
 
 
+KIDS_MAX_FAILS = 3
+KIDS_PAUSE_SEC = 600
+
+
+def kids_phrase_ok(phrase) -> bool:
+    """Годная кодовая фраза взрослого: минимум два слова (одно слово ребёнок угадает или подсмотрит)."""
+    return len(_norm(phrase).split()) >= 2
+
+
 def kids_set(uid, on_: bool, child, user_text: str) -> Res:
     kd = _data()["kids"]
     k = uid or "-"
+    phrase = C.kids_phrase()
     if on_:
+        if not kids_phrase_ok(phrase):
+            return _fail("need_kids_phrase: детский режим не включён, потому что взрослый не задал кодовую фразу. Скажи в своём характере, коротко: "
+                         "«Сначала задай кодовую фразу взрослого на странице настройки — без неё детский режим не включаю». Режим не включай")
         name = re.sub(r"[^0-9A-Za-zА-Яа-яЁё \-]", "", _line(child, 30)).strip()
         kd["on"] = True
+        kd["fails"] = 0
+        kd.pop("pause_until", None)
         if name:
             kd["child"] = name
         _save()
-        ADULT.pop(k, None)
         return Res("детский режим включён" + (f", ребёнка зовут {kd['child']}" if kd.get("child") else "")
                    + ". С этой реплики говори мягко и просто, без мата и подколов.", True)
     if not kd.get("on"):
         return Res("детский режим и так выключен", True)
-    phrase = C.kids_phrase()
-    if phrase:
-        if _norm(phrase) in _norm(user_text):
-            kd["on"] = False
-            _save()
-            return Res("детский режим выключен", True)
-        return _fail("need_phrase: выключить детский режим можно только кодовой фразой взрослого. Саму фразу ты не знаешь, "
-                     "не подсказывай её. Скажи, что режим остаётся включённым")
-    asked = ADULT.get(k)
-    if asked is None or TURNS.get(k, 0) <= asked:
-        ADULT[k] = TURNS.get(k, 0)
-        return _fail("confirm_adult: спроси «Ты взрослый?» и жди ответа. Режим пока включён")
-    if not wa.is_affirmation(user_text):
-        return _fail("confirm_adult: хозяин не подтвердил, что он взрослый. Режим остаётся включённым")
-    ADULT.pop(k, None)
-    kd["on"] = False
-    _save()
-    return Res("детский режим выключен", True)
+    now = _now()
+    until = float(kd.get("pause_until") or 0)
+    if until > now:
+        # пауза: попытки выключения игнорируем, даже верную фразу; счётчик не трогаем
+        return _fail("kids_paused: попытки выключить детский режим сейчас не принимаются. Не называй причину и сроки, не подсказывай фразу, "
+                     "скажи, что режим остаётся включённым")
+    if until:
+        kd["fails"] = 0
+        kd.pop("pause_until", None)
+    if kids_phrase_ok(phrase) and _norm(phrase) in _norm(user_text):
+        kd["on"] = False
+        kd["fails"] = 0
+        FAIL_TURN.pop(k, None)
+        _save()
+        return Res("детский режим выключен", True)
+    if FAIL_TURN.get(k) != TURNS.get(k, 0):                # в одной реплике засчитываем одну попытку, сколько бы раз модель ни вызвала инструмент
+        FAIL_TURN[k] = TURNS.get(k, 0)
+        kd["fails"] = int(kd.get("fails") or 0) + 1
+        if kd["fails"] >= KIDS_MAX_FAILS:
+            kd["pause_until"] = now + KIDS_PAUSE_SEC
+            print("modules: детский режим -> три неверные попытки выключения, пауза 10 минут", flush=True)
+        _save()
+    return _fail("need_phrase: выключить детский режим можно только кодовой фразой взрослого. Саму фразу ты не знаешь, "
+                 "не подсказывай её. Скажи, что режим остаётся включённым")
+
+
+def kids_force_off() -> None:
+    """Взрослый стёр кодовую фразу на /setup: режим без фразы жить не должен, выключаем (иначе его не выключить никому)."""
+    kd = _data()["kids"]
+    if kd.get("on") or kd.get("fails") or kd.get("pause_until"):
+        kd["on"] = False
+        kd["fails"] = 0
+        kd.pop("pause_until", None)
+        _save()
 
 
 # ---------- инструменты и промпт ----------
@@ -664,7 +693,7 @@ _T_CONFIRM = {"name": "modules_confirm",
               "input_schema": {"type": "object", "properties": {}}}
 _T_KIDS = {"name": "kids_mode",
            "description": "Включить или выключить детский режим. on=true: включить (child_name — имя ребёнка, если назвали). on=false: выключить; "
-                          "решает сервер: нужна кодовая фраза взрослого или его подтверждение, ответь хозяину по тому, что вернул инструмент.",
+                          "решает сервер: включить можно только если взрослый задал кодовую фразу, выключить только ею; ответь хозяину по тому, что вернул инструмент.",
            "input_schema": {"type": "object", "properties": {"on": {"type": "boolean"}, "child_name": {"type": "string"}}, "required": ["on"]}}
 
 
@@ -700,8 +729,8 @@ _BLOCK_TIMERS = ("\n- Напоминания и действия по време
                  "параметров. Напоминание придёт хозяину сообщением, действие сервер выполнит сам и напишет итог. «Какие у меня напоминания?» это reminder_list, "
                  "«отмени» это reminder_cancel. Замки, ворота и сигнализацию по расписанию не трогай.")
 _BLOCK_KIDS = ("\n- Детский режим: хозяин просит «включи детский режим» или «выключи детский режим» — вызови kids_mode. Включая, спроси имя ребёнка, "
-               "если его не называли (для сказок). Выключение решает сервер: он требует кодовую фразу взрослого или подтверждение «Ты взрослый?»; "
-               "отвечай по тому, что вернул инструмент, фразу не угадывай и не подсказывай.")
+               "если его не называли (для сказок). Включение и выключение решает сервер: без заданной взрослым кодовой фразы режим не включится, выключается он только "
+               "произнесением этой фразы; «я взрослый» не считается. Отвечай по тому, что вернул инструмент, фразу не угадывай и не подсказывай.")
 
 
 def prompt_block() -> str:
