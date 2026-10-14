@@ -6,6 +6,7 @@
 import asyncio
 import hmac
 import re
+import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 
@@ -389,6 +390,10 @@ async def health():
            "iot": bool(C.iot_token()), "tokens_today": usage.used(),
            "spent_usd": usage.spent_usd(), "budget_usd": usage.budget_usd(),
            "memory": "disk" if memory.disk_ok() else "ram"}
+    ri = activation.refresh_info()         # диагностика обновления пакета: только флаги и код причины, без секретов
+    out.update(pack_active=C.pack_active(), modules={n: C.module_on(n) for n in C.MODULE_NAMES},
+               last_refresh_at=(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ri["at"])) if ri["at"] else None),
+               last_refresh_status=ri["status"])
     if C.pack_active():                    # персональное (род) наружу не светим; тон и откуда он взялся нужны для диагностики
         out.pop("gender")
     return out

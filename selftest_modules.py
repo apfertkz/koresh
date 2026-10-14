@@ -311,6 +311,82 @@ check("24a22. рубильник вернули (явного false нет) -> �
 LIC24.revoked = False
 C.set_modules({}, False)
 
+# ---- ТЗ-37: диагностика обновления пакета (/health), причины сбоев, обновление при открытии страницы модулей, самовосстановление ----
+_r24()
+check("24r0. до первого обновления: last_refresh_status=never, модулей нет", activation.refresh_info() == {"at": 0.0, "status": "never"})
+_pack24()
+LIC24.pack, LIC24.version = {"schema": 1, "version": 2, "modules": {"macros": True, "timers": True, "kids": True}}, 2
+check("24r1. refresh=update: статус ok, время проставлено",
+      run(activation.refresh_once()) == "update" and activation.refresh_info()["status"] == "ok" and activation.refresh_info()["at"] > 0)
+with TestClient(main.app) as _tc24r:
+    hj = _tc24r.get("/health").json()
+check("24r2. /health: pack_active, флаги модулей, last_refresh_at (ISO) и last_refresh_status=ok",
+      hj.get("pack_active") is True and hj.get("modules") == {"macros": True, "timers": True, "kids": True} and hj.get("last_refresh_status") == "ok"
+      and re.match(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$", str(hj.get("last_refresh_at"))), str(hj))
+check("24r3. в /health нет секретов (токен обновления, seed, install_id, Yandex ID)",
+      not any(x in json.dumps(hj) for x in (RT24, IID24, "seed-", "1000000001")), json.dumps(hj)[:200])
+check("24r4. сервер говорит «то же самое» -> same, статус ok_same", run(activation.refresh_once()) == "same" and activation.refresh_info()["status"] == "ok_same")
+LIC24.down = True
+check("24r5. сервер лицензий лёг -> fail, статус net_ConnectError (причина без секретов), пакет и модули целы",
+      run(activation.refresh_once()) == "fail" and activation.refresh_info()["status"] == "net_ConnectError" and C.module_on("kids"))
+LIC24.down = False
+_real_post24 = activation._post
+async def _p401(path, body, headers=None, timeout=10.0):
+    return httpx.Response(401, json={"ok": False})
+activation._post = _p401
+check("24r6. токен обновления не подошёл (401) -> fail, статус http_401", run(activation.refresh_once()) == "fail" and activation.refresh_info()["status"] == "http_401")
+activation._post = _real_post24
+# установка без токена обновления (старая схема / потерян license.json): честная причина и подсказка на странице
+st24r = activation._read_state()
+st24r.pop("refresh_token", None)
+activation._write_state(st24r)
+check("24r7. пакет есть, токена нет -> skip, статус skip_no_token", run(activation.refresh_once()) == "skip" and activation.refresh_info()["status"] == "skip_no_token")
+check("24r8. страница модулей получает подсказку «обнови подключение»",
+      setupwiz._link_state()["ok"] is False and "Обнови подключение" in setupwiz._link_state()["hint"] and "seed" not in json.dumps(setupwiz._link_state()))
+# диск не принял пакет: версию принятой НЕ считаем, следующий заход заберёт пакет снова
+_pack24()
+LIC24.pack, LIC24.version = {"schema": 1, "version": 5, "modules": {"macros": True}}, 5
+_real_wa24 = activation._write_atomic
+activation._write_atomic = lambda path, data: False
+check("24r9. диск не принял пакет -> fail, статус disk", run(activation.refresh_once()) == "fail" and activation.refresh_info()["status"] == "disk")
+activation._write_atomic = _real_wa24
+check("24r10. версия не записана -> следующий заход снова update (обновление не теряется)",
+      activation._read_state().get("pack_version") == 1 and run(activation.refresh_once()) == "update" and activation._read_state().get("pack_version") == 5)
+# сервер лицензий пересоздали: его версия ниже нашей -> счётчик сбрасывается, пакет приезжает заново
+LIC24.version, LIC24.pack = 2, {"schema": 1, "version": 2, "modules": {"kids": True}}
+check("24r11. версия сервера ниже нашей -> ok_same_resync, счётчик сброшен", run(activation.refresh_once()) == "same" and activation.refresh_info()["status"] == "ok_same_resync"
+      and activation._read_state().get("pack_version") == 0)
+check("24r12. следующий заход забирает пакет заново", run(activation.refresh_once()) == "update" and C.module_on("kids") and not C.module_on("macros"))
+# страница модулей сама подтягивает пакет (не ждёт часового цикла) и не чаще раза в REFRESH_ON_DEMAND секунд
+_r24()
+_pack24()
+os.environ["SETUP_CODE"] = "refresh-code-37"
+setupwiz.reset_for_tests()
+C.set_setup_done(True)
+LIC24.pack, LIC24.version = {"schema": 1, "version": 2, "modules": {"macros": True, "timers": True}}, 2
+tm37 = _TC(main.app)
+tm37.post("/setup/api/moduli/login", json={"code": "refresh-code-37"})
+n0 = len(LIC24.refreshes)
+sm37 = tm37.get("/setup/api/moduli/state").json()
+check("24r13. открыл страницу модулей -> пакет подтянулся сразу: макросы и напоминания «включён», связь ok",
+      [m["on"] for m in sm37["modules"]] == [True, True, False] and sm37["link"] == {"ok": True} and len(LIC24.refreshes) == n0 + 1, str(sm37)[:300])
+tm37.get("/setup/api/moduli/state")
+check("24r14. повторное открытие в пределах 20 с не дёргает сервер лицензий", len(LIC24.refreshes) == n0 + 1)
+activation._REFRESH["tried"] = 0.0
+LIC24.pack, LIC24.version = {"schema": 1, "version": 3, "modules": {"macros": True, "timers": True, "kids": True}}, 3
+sm37 = tm37.get("/setup/api/moduli/state").json()
+check("24r15. по истечении окна новое включение (kids) видно на странице сразу", [m["on"] for m in sm37["modules"]] == [True, True, True])
+activation._REFRESH["tried"] = 0.0
+LIC24.down = True
+sm37 = tm37.get("/setup/api/moduli/state").json()
+check("24r16. сервер лицензий лёг: страница открывается, модули прежние, есть понятная подсказка про связь",
+      sm37["ok"] and [m["on"] for m in sm37["modules"]] == [True, True, True] and sm37["link"]["ok"] is False and "net_ConnectError" in sm37["link"]["hint"], str(sm37["link"]))
+LIC24.down = False
+os.environ.pop("SETUP_CODE", None)
+setupwiz.reset_for_tests()
+C.set_setup_done(False)
+activation._REFRESH["tried"] = 0.0
+
 # ================= 24b. голосовые макросы =================
 _r24()
 _mods24("macros")

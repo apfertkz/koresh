@@ -31,7 +31,7 @@ PACK_NAME = "pack.enc"
 MAGIC = b"KP1"
 SUPPORTED_SCHEMA = 1
 REFRESH_EVERY = 3600          # раз в час: рубильник модулей в админке должен сработать в пределах часа (ТЗ-32)
-REFRESH_TIMEOUT = 3.0
+REFRESH_TIMEOUT = 6.0
 FLOW_TTL = 600
 
 _TRANSPORT = None              # ворота подставляют httpx.MockTransport
@@ -269,6 +269,7 @@ def reset_for_tests() -> None:
     _FLOW.update(handle="", secret="", exp=0.0)
     _PENDING.update(has=False, pack={})
     _RAM_ID["id"] = ""
+    _REFRESH.update(at=0.0, status="never", tried=0.0)
     C.clear_pack()
 
 
@@ -378,37 +379,78 @@ async def poll_flow() -> dict:
     return {"status": "ok", "saved": saved, "iot_token": j.get("yandex_token") if isinstance(j.get("yandex_token"), str) else ""}
 
 
+_REFRESH = {"at": 0.0, "status": "never", "tried": 0.0}   # итог последнего обновления: наружу (в /health и на /setup/moduli) только код причины, без секретов
+REFRESH_ON_DEMAND = 20.0       # страница модулей просит свежий пакет не чаще раза в столько секунд (кнопка «подключён» из бота приходит сразу, а цикл раз в час)
+
+
+def refresh_info() -> dict:
+    """Что было с последним обновлением пакета: {"at": unix | 0, "status": "never" | "ok" | "ok_same" | "skip_*" | "http_NNN" | "net_<Тип>" | "bad_pack" | "disk" | "revoked" | "error"}."""
+    return {"at": _REFRESH["at"], "status": _REFRESH["status"]}
+
+
+def _note_refresh(res: str, why: str) -> str:
+    _REFRESH.update(at=time.time(), status=why)
+    print(f"activation: refresh {res} ({why})", flush=True)
+    return res
+
+
 async def refresh_once() -> str:
-    """same | update | revoked | skip | fail. Сбой тихий: у клиента остаётся то, что уже есть."""
+    """same | update | revoked | skip | fail. Сбой тихий для клиента: остаётся то, что уже есть. В журнал и в refresh_info() идёт одна строка с причиной (без секретов)."""
+    _REFRESH["tried"] = time.time()
     try:
         st = _read_state()
         rt, iid = st.get("refresh_token"), st.get("install_id")
-        if not configured() or not rt or not iid or not os.path.exists(_path(PACK_NAME)):
-            return "skip"
-        r = await _post("/v1/pack/refresh", {"install_id": iid, "since": int(st.get("pack_version") or 0),
-                                             "version": str(C.VERSION)[:40], **({"server_domain": server_domain()} if server_domain() else {})},
-                        headers={"Authorization": f"Bearer {rt}"}, timeout=REFRESH_TIMEOUT)
+        if not configured():
+            return _note_refresh("skip", "skip_not_configured")
+        if not os.path.exists(_path(PACK_NAME)):
+            return _note_refresh("skip", "skip_no_pack")          # активации нет (или Volume потеряли): обновлять нечего
+        if not rt or not iid:
+            return _note_refresh("skip", "skip_no_token")         # пакет есть, а токена обновления нет: нужна повторная активация
+        try:
+            r = await _post("/v1/pack/refresh", {"install_id": iid, "since": int(st.get("pack_version") or 0),
+                                                 "version": str(C.VERSION)[:40], **({"server_domain": server_domain()} if server_domain() else {})},
+                            headers={"Authorization": f"Bearer {rt}"}, timeout=REFRESH_TIMEOUT)
+        except Exception as e:  # noqa: BLE001
+            return _note_refresh("fail", "net_" + re.sub(r"[^A-Za-z0-9]", "", type(e).__name__)[:30])
         if r.status_code == 410:
             forget(clear_ram=False)
             _PENDING.update(has=True, pack={})
             C.set_modules({}, False)           # отзыв: модули гаснут сразу, остальное на границе эпизода
-            return "revoked"
+            return _note_refresh("revoked", "revoked")
         if r.status_code != 200:
-            return "fail"
-        j = r.json()
+            return _note_refresh("fail", f"http_{r.status_code}")
+        try:
+            j = r.json()
+        except ValueError:
+            return _note_refresh("fail", "bad_json")
         if j.get("status") != "update":
-            return "same"
+            sv = j.get("pack_version")
+            if isinstance(sv, int) and 0 < sv < int(st.get("pack_version") or 0):
+                # У сервера версия НИЖЕ нашей (базу лицензий пересоздали/откатили): «то же самое» было бы навсегда. Сбрасываем счётчик, следующий заход заберёт пакет заново.
+                st["pack_version"] = 0
+                _write_state(st)
+                return _note_refresh("same", "ok_same_resync")
+            return _note_refresh("same", "ok_same")
         pack = sanitize(j.get("pack"))
         if pack is None:
-            return "fail"
+            return _note_refresh("fail", "bad_pack")
         ok = _write_atomic(_path(PACK_NAME), _encrypt(pack, str(st.get("seed")), str(st.get("yandex_id")), iid))
-        st["pack_version"] = j.get("pack_version") if isinstance(j.get("pack_version"), int) else st.get("pack_version")
-        _write_state(st)
+        if ok:                                  # версию помечаем принятой ТОЛЬКО если пакет лёг на диск, иначе следующий заход увидит «same» и обновление потеряется
+            st["pack_version"] = j.get("pack_version") if isinstance(j.get("pack_version"), int) else st.get("pack_version")
+            _write_state(st)
         _PENDING.update(has=True, pack=pack)
         C.set_modules(pack.get("modules"), pack.get("promo_all_modules") is True)     # рубильник: модули включаются и гаснут сразу, не ждут границы эпизода
-        return "update" if ok else "fail"
-    except Exception:  # noqa: BLE001
-        return "fail"
+        return _note_refresh("update", "ok") if ok else _note_refresh("fail", "disk")
+    except Exception as e:  # noqa: BLE001
+        return _note_refresh("fail", "error_" + re.sub(r"[^A-Za-z0-9]", "", type(e).__name__)[:30])
+
+
+async def refresh_on_demand() -> str | None:
+    """Страница модулей открыта: подтянуть пакет сейчас, не ждать часового цикла (иначе после «Модуль подключён» из бота страница час показывает «не подключён»).
+    Не чаще раза в REFRESH_ON_DEMAND секунд на попытку (удачную или нет). Возвращает итог refresh_once() или None, если рано."""
+    if time.time() - _REFRESH["tried"] < REFRESH_ON_DEMAND:
+        return None
+    return await refresh_once()
 
 
 async def refresh_loop() -> None:

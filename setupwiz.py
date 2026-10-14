@@ -640,7 +640,22 @@ def build_mod_state() -> dict:
         "tz_offset": _field("TZ_OFFSET", C.tz_offset()),
         "kids_phrase": {"set": bool(C.kids_phrase()), "source": C.source("KIDS_PHRASE")},          # саму фразу не отдаём никогда
         "balance": usage.snapshot(),
+        "link": _link_state(),
     }
+
+
+def _link_state() -> dict:
+    """Связь с сервером лицензий для страницы модулей: ok | problem + подсказка человеку. Без секретов: только код причины и понятная фраза."""
+    ri = activation.refresh_info()
+    st = ri["status"]
+    if st in ("ok", "ok_same", "ok_same_resync", "never"):
+        return {"ok": True}
+    if st in ("skip_no_token", "skip_no_pack"):
+        return {"ok": False, "code": st, "hint": "Этот Кореш подключён к боту по старой схеме и сам обновляться не может. "
+                                                  "Обнови подключение: открой /setup, введи код из бота и заново войди через Яндекс. Настройки и память не пропадут."}
+    if st == "revoked":
+        return {"ok": False, "code": st, "hint": "Код активации отозван. Напиши в бот-установщик."}
+    return {"ok": False, "code": st, "hint": "Не получилось связаться с сервером лицензий (" + st + "). Модули подтянутся сами, как только связь появится; страница пробует каждые полминуты."}
 
 
 @router.get("/setup/moduli", response_class=HTMLResponse)
@@ -697,6 +712,10 @@ async def moduli_logout(request: Request):
 @router.get("/setup/api/moduli/state")
 async def moduli_state(request: Request):
     _need_mod(request)
+    try:
+        await activation.refresh_on_demand()           # открыл страницу -> свежий пакет сейчас, а не через час (модуль «подключили» в боте минуту назад)
+    except Exception:  # noqa: BLE001
+        pass
     return _json_ok(**build_mod_state())
 
 

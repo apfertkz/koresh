@@ -274,6 +274,7 @@ function renderMain() {
   app.replaceChildren(
     h('h1', 0, 'Мой Кореш'),
     h('p', {class: 'small'}, 'Версия ' + S.version + '. Полная настройка сервера: ', h('span', {class: 'mono'}, location.origin + '/setup'), '.'),
+    S.link && !S.link.ok ? note('warn', S.link.hint) : null,
     modulesCard(), settingsCard(), S.modules.some(m => m.id === 'timers' && m.on) ? h('div', {class: 'card'}, callBlock()) : null, balanceCard());
 }
 
