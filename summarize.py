@@ -45,7 +45,7 @@ async def summarize(dialog: list[dict]) -> str:
     try:
         resp = await asyncio.wait_for(
             brain._create(system=SYSTEM, messages=[{"role": "user", "content": tr}], **kw), timeout=TIMEOUT)
-        usage.add(brain._tokens(resp))
+        usage.add(brain._tokens(resp), usage.cost_of(resp, kw["model"]))
         if resp.stop_reason == "refusal":
             return ""
         text = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text").strip()

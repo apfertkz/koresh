@@ -27,6 +27,7 @@ ADMISSION = re.compile(r"не вышло|не получилось|не удал
                        r"не (?:открыл|закрыл|запустил|поставил|выставил|установил)", re.I)
 
 REASONS = {
+    "kids_only_light": "в детском режиме управляется только свет, остальное у взрослых",
     "locks_disabled": "управление замками, воротами и сигнализацией отключено в настройках",
     "need_phrase": "для этого нужна кодовая фраза",
 }
@@ -75,6 +76,11 @@ class Journal:
         self.events: list[dict] = []
         self.wa_active = wa_active                 # у клиента включён WhatsApp: «написал/скинул» тоже проверяем
         self.wa_events: list[dict] = []
+        self.mod_drafted = False                   # ход закончился черновиком макроса или напоминания (модули, ТЗ-32)
+
+    def module(self, ok: bool, reason: str = "") -> None:
+        """Итог инструмента модулей (сохранение макроса, напоминание, детский режим): успех или причина отказа."""
+        self.events.append({"tool": "module", "target": "", "ok": ok, "reason": reason})
 
     def control(self, target: str, result: str) -> None:
         ok = (result or "").strip() == "ok"
@@ -110,11 +116,15 @@ class Journal:
         return sum(1 for e in self.events if e["tool"] == "control" and e["ok"])
 
     @property
+    def mod_ok(self) -> int:
+        return sum(1 for e in self.events if e["tool"] == "module" and e["ok"])
+
+    @property
     def any_ok(self) -> int:
         return sum(1 for e in self.events if e["ok"])
 
     def failures(self) -> list[str]:
-        return [e["reason"] for e in self.events if e["tool"] in ("control", "list") and not e["ok"]]
+        return [e["reason"] for e in self.events if e["tool"] in ("control", "list", "module") and not e["ok"]]
 
 
 def _negated(text: str, start: int) -> bool:
@@ -146,7 +156,7 @@ def check(text: str, journal: Journal, tone: str | None = None, gender: str | No
         return prompts.honest("fail" if fails else "none", fails[-1] if fails else NO_WA_ACTION, tone, gender)
     if not claims_action(t, journal.wa_active):
         return text
-    if journal.iot_ok:
+    if journal.iot_ok or journal.mod_ok:
         if not journal.failures() or ADMISSION.search(text):
             return text                   # было успешное действие; про неудачи модель сама сказала
         return prompts.honest("partial", journal.failures()[-1], tone, gender)

@@ -247,6 +247,31 @@ function go(n) {
   window.scrollTo(0, 0);
 }
 
+/* баланс Anthropic: считаем траты сами (остаток с обычного ключа не прочитать), клиент говорит, сколько закинул */
+function money(x) { return '$' + (Math.round(x * 100) / 100).toFixed(2); }
+function balanceBlock() {
+  const B = S.balance || {budget_usd: 5, spent_usd: 0, remaining_usd: 5, days_left: null};
+  const amount = h('input', {type: 'text', inputmode: 'decimal', name: 'anthropic-topup', autocomplete: 'off', 'aria-label': 'Сколько ты закинул на Anthropic, в долларах',
+    value: String(B.budget_usd), style: 'width:6em'});
+  const out = h('div');
+  const line = (b) => b.budget_usd > 0
+    ? 'Потрачено ' + money(b.spent_usd) + ' из ' + money(b.budget_usd) + (b.days_left ? ', хватит примерно на ' + b.days_left + ' дн.' : '') + '. Это оценка из токенов, точный остаток виден только в консоли Anthropic.'
+    : 'Слежение выключено (сумма 0). Годится, если в Anthropic включено автопополнение.';
+  const status = h('p', {class: 'small'}, line(B));
+  return h('div', {class: 'balance'},
+    h('h3', 0, 'Баланс на Anthropic'),
+    h('p', 0, '$5 на Anthropic это баланс на разговоры, а не разовый платёж: он тратится по ходу болтовни. Кореш считает траты и заранее скажет голосом, когда деньги будут на исходе. Совет: включи в Anthropic автопополнение (Billing, Auto-reload: порог $2, пополнять на $5), тогда баланс не кончится. С автопополнением поставь здесь 0, чтобы Кореш не предупреждал зря.'),
+    h('label', 0, 'Сколько ты закинул на Anthropic ($) ', amount),
+    h('div', 0, btn('Я пополнил', async () => {
+      const r = await api('topup', {amount: amount.value});
+      if (!r.ok) { out.replaceChildren(note('bad', r.message || 'Не получилось.')); return; }
+      S.balance = r.balance;
+      status.textContent = line(r.balance);
+      out.replaceChildren(note('ok', 'Записал. Счётчик трат с нуля.'));
+    })),
+    status, out);
+}
+
 /* ---------- 1. мозг ---------- */
 function stepBrain() {
   const out = h('div');
@@ -256,6 +281,7 @@ function stepBrain() {
     S.brain_key_set
       ? note('ok', 'Ключ в переменных есть. Модель: ', h('span', {class: 'mono'}, S.model))
       : note('bad', 'Ключа ANTHROPIC_API_KEY в переменных нет. Клиент вставляет его в Railway, во вкладке Variables. Сервис перезапустится, потом обнови эту страницу.'),
+    balanceBlock(),
     h('p', {class: 'small'}, 'Проверка делает один крошечный платный вызов (доли цента) и только по нажатию кнопки.'),
     btn('Проверить ключ', async () => {
       out.replaceChildren(note('info', 'Спрашиваю у мозга…'));
@@ -444,6 +470,32 @@ function pairEditor(pairs, ph1, ph2, listId) {
   wrap.addRow = () => add('', '');
   return wrap;
 }
+function modulesBlock() {
+  const m = S.modules || {};
+  if (!m.timers && !m.kids) return null;
+  const out = h('div');
+  const tz = h('input', {type: 'text', inputmode: 'decimal', maxlength: 5, value: String(S.tz_offset.value), 'aria-label': 'Часовой пояс'});
+  const kp = h('input', {type: 'password', autocomplete: 'new-password', maxlength: 80,
+    placeholder: S.kids_phrase.set ? 'Фраза задана. Оставь пустым, чтобы не менять' : 'Кодовая фраза взрослого (минимум 6 символов)', 'aria-label': 'Кодовая фраза взрослого'});
+  const kc = h('input', {type: 'checkbox'});
+  return h('div', 0,
+    h('h3', 0, 'Модули'),
+    m.timers ? h('div', 0,
+      h('label', 0, 'Часовой пояс для напоминаний (часы от UTC, Алматы это 5)'), tz) : null,
+    m.kids ? h('div', 0,
+      h('label', 0, 'Кодовая фраза взрослого для детского режима'), kp,
+      S.kids_phrase.set ? h('label', {class: 'opt', style: 'font-weight:400'}, kc, h('span', 0, 'Стереть сохранённую фразу')) : null,
+      h('p', {class: 'small'}, 'Без этой фразы детский режим выключается словами «выключи детский режим» и ответом «да» на вопрос «ты взрослый?». Фраза нигде не показывается.')) : null,
+    btn('Сохранить модули', async () => {
+      const r = await api('modules', {tz_offset: m.timers ? tz.value : '', kids_phrase: kp.value, clear_kids_phrase: kc.checked});
+      kp.value = '';
+      if (!r.ok) { out.replaceChildren(note('bad', r.message || 'Не получилось.')); return; }
+      const st = await api('state'); if (st.ok) { S = st; }
+      out.replaceChildren(note('ok', 'Сохранено. Применяется сразу.'), r.persisted ? null : note('warn', 'Диск недоступен: настройки живут до перезапуска.'));
+    }, 'alt'),
+    out);
+}
+
 function stepHome() {
   const out = h('div');
   const owner = h('input', {type: 'text', maxlength: 40, value: S.owner || '', placeholder: 'Как к тебе обращаться', 'aria-label': 'Имя хозяина'});
@@ -494,6 +546,7 @@ function stepHome() {
     h('label', 0, 'Кодовая фраза'), phrase,
     S.lock_phrase.set ? h('label', {class: 'opt', style: 'font-weight:400'}, clear, h('span', 0, 'Стереть сохранённую фразу')) : null,
     h('p', {class: 'small'}, 'После сохранения фраза нигде не показывается. Её знает только клиент, в карточку клиента её не пишем.'),
+    modulesBlock(),
     btn('Сохранить', async () => {
       const r = await api('home', {owner: owner.value, people: people.values(), rooms: rooms.values(), blocked,
         allow_locks: allow.checked, lock_phrase: phrase.value, clear_lock_phrase: clear.checked});

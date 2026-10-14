@@ -16,6 +16,8 @@ import brain
 import config as C
 import history
 import memory
+import modules
+import notify
 import prompts
 import setupwiz
 import summarize
@@ -25,14 +27,17 @@ import wa
 
 @asynccontextmanager
 async def lifespan(_app):
-    """Старт: персональный пакет с Volume -> в оперативку (нет/битый -> обычный Кореш); обновление пакета раз в сутки, тихо."""
+    """Старт: персональный пакет с Volume -> в оперативку (нет/битый -> обычный Кореш); обновление пакета раз в час, тихо.
+    Планировщик напоминаний (модуль «таймеры») крутится всегда, а действует, только пока модуль включён в пакете."""
     activation.load()
     task = asyncio.create_task(activation.refresh_loop())
+    sched = asyncio.create_task(modules.scheduler_loop())
     wa.autostart()                      # WhatsApp-демон: только если номер уже привязан
     try:
         yield
     finally:
         task.cancel()
+        sched.cancel()
         await wa.shutdown()
 
 
@@ -61,7 +66,13 @@ def state_for(uid: str) -> UserState:
 
 
 def alice_reply(text: str, end: bool = False) -> dict:
-    return {"response": {"text": text[:1000], "tts": tts.clean(text), "end_session": end}, "version": "1.0"}
+    """Ответ навыку. Если в тексте есть ссылка на пополнение баланса: на экране она видна, голосом не читается
+    (из tts вырезана целиком), и под ответом кнопка «Пополнить баланс» (протокол Диалогов: response.buttons)."""
+    spoken = text.replace(prompts.BILLING_URL, " ") if prompts.BILLING_URL in text else text
+    resp = {"text": text[:1000], "tts": tts.clean(re.sub(r"\s+", " ", spoken).strip()), "end_session": end}
+    if prompts.BILLING_URL in text:
+        resp["buttons"] = [{"title": "Пополнить баланс", "url": prompts.BILLING_URL, "hide": False}]
+    return {"response": resp, "version": "1.0"}
 
 
 def close_sync(st: UserState, store: memory.Store) -> None:
@@ -152,6 +163,11 @@ def after_reply(st: UserState) -> None:
 
 def deliver(st: UserState, text: str) -> dict:
     after_reply(st)
+    days = usage.take_low_warning()          # потратили >= 80% суммы с последнего пополнения: один раз предупреждаем
+    if days is not None:
+        print(f"usage: потрачено {usage.spent_usd()} из {usage.budget_usd()} $ -> предупреждение (примерно {days} дн.)", flush=True)
+        text = prompts.phrase("lowbalance", days=days) + "\n" + prompts.BILLING_URL + "\n" + text
+        notify_owner_bg(prompts.phrase("lowbalance_wa", days=days), "balance_low")
     return alice_reply(text)
 
 
@@ -178,7 +194,7 @@ async def run_brain(st: UserState, user_idx: int) -> str:
 
 ERROR_TEXTS = {
     "auth": "Мозг не принимает ключ. Нужно проверить ключ Anthropic в настройках.",
-    "billing": "Мозг отказал: похоже, кончились кредиты или выбран лимит расходов. Проверьте баланс и Spend limit в консоли Anthropic.",
+    "billing": prompts.PHRASES["derzkiy"]["billing"],      # запасной текст; живой берётся по тону и роду: prompts.phrase("billing")
     "busy": "Мозг сейчас перегружен. Попробуй ещё раз через минуту.",
     "history": "У меня сбилась память разговора. Повтори, что хотел, я начну с чистого листа.",
     "bad": "Мозг не принял запрос. Попробуй ещё раз, а если повторяется, смотри журнал сервиса.",
@@ -186,10 +202,35 @@ ERROR_TEXTS = {
 }
 
 
+def notify_owner_bg(text: str, kind: str | None = None) -> None:
+    """Служебное сообщение хозяину в WhatsApp «себе», в фоне, не задерживая ответ Алисе. Нет привязки / сбой -> молча.
+    kind (balance_low | balance_zero): то же самое уходит в очередь Телеграма через сервер лицензий (ТЗ-32), там появится кнопка «Пополнить баланс»."""
+    async def _go():
+        try:
+            await wa.notify_owner(text)
+        except Exception as e:  # noqa: BLE001
+            print(f"notify: WhatsApp хозяину не ушёл ({type(e).__name__})", flush=True)
+        if kind:
+            try:
+                await notify.post(kind, text)
+            except Exception as e:  # noqa: BLE001
+                print(f"notify: очередь не приняла ({type(e).__name__})", flush=True)
+    try:
+        t = asyncio.get_running_loop().create_task(_go())
+    except RuntimeError:
+        return
+    BG.add(t)
+    t.add_done_callback(BG.discard)
+
+
 def brain_error_text(e: Exception) -> str:
     kind = brain.error_kind(e)
     # текст ошибки не печатаем: в нём может быть ключ
     print(f"brain error: {type(e).__name__} {getattr(e, 'status_code', '')} -> {kind}", flush=True)
+    if kind == "billing":                    # деньги на мозги кончились: говорим в характере и один раз в сутки пишем хозяину
+        if usage.take_zero_notice():
+            notify_owner_bg(prompts.phrase("billing_wa"), "balance_zero")
+        return prompts.phrase("billing") + "\n" + prompts.BILLING_URL
     return ERROR_TEXTS[kind]
 
 
@@ -283,6 +324,7 @@ async def health():
     out = {"ok": True, "version": C.VERSION, "tone": C.tone(), "gender": C.gender(), "model": C.model(), "effort": C.effort(),
            "locks": C.allow_locks() and bool(C.lock_phrase()),
            "iot": bool(C.iot_token()), "tokens_today": usage.used(),
+           "spent_usd": usage.spent_usd(), "budget_usd": usage.budget_usd(),
            "memory": "disk" if memory.disk_ok() else "ram"}
     if C.pack_active():                    # персональное (тон, род) наружу не светим
         out.pop("tone"), out.pop("gender")

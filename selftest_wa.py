@@ -660,7 +660,7 @@ exports.useMultiFileAuthState = async (dir) => {
 exports.default = function makeWASocket(opts) {
   n++; const ev = new EventEmitter(); const names = []; const my = n;
   const on = ev.on.bind(ev); ev.on = (name, fn) => { names.push(name); return on(name, fn) };
-  const sock = { ev, end() { log({ end: my }) },
+  const sock = { ev, user: { id: '77019990000:12@s.whatsapp.net' }, end() { log({ end: my }) },
     signalRepository: { lidMapping: { async getPNsForLIDs(l) { log({ resolve: l }); return l.filter(x => x === '777@lid').map(x => ({ lid: x, pn: '77029990000:0@s.whatsapp.net' })) } } },
     async onWhatsApp(jid) { log({ onWA: jid }); return jid.startsWith('7700000') ? [{ exists: false }] : [{ exists: true, jid }] },
     async sendMessage(jid, content) { log({ send: jid, text: content.text }); return { key: { id: 'ID' + my }, message: content } },
@@ -758,6 +758,13 @@ exports.default = function makeWASocket(opts) {
               se == {"ok": True} and {"onWA": "77015551234@s.whatsapp.net"} in cl and {"send": "77015551234@s.whatsapp.net", "text": "привет, опоздаю"} in cl, str(cl[-3:]))
         sn2 = _nhttp("POST", "/send", {"to": "77000000000", "text": "x"})[1]
         check("22j10. номера нет в WhatsApp -> not_on_whatsapp, sendMessage не звали", sn2 == {"ok": False, "error": "not_on_whatsapp"} and not any(c.get("send") == "77000000000@s.whatsapp.net" for c in cl))
+        sself = _nhttp("POST", "/send", {"self": True, "text": "служебное себе"})[1]
+        cl2 = _ncalls_list()
+        check("22j10a. служебное «себе» (self=true): уходит на собственный номер аккаунта без суффикса устройства, номер не проверяется через onWhatsApp, чужой номер не нужен",
+              sself == {"ok": True} and {"send": "77019990000@s.whatsapp.net", "text": "служебное себе"} in cl2 and {"onWA": "77019990000@s.whatsapp.net"} not in cl2, str(cl2[-3:]))
+        sself2 = _nhttp("POST", "/send", {"self": True})[1]
+        check("22j10b. self без текста -> missing_to_or_text; без token -> 401", sself2 == {"ok": False, "error": "missing_to_or_text"}
+              and _nhttp("POST", "/send", {"self": True, "text": "x"}, token="")[0] == 401)
         check("22j11. sent-store для getMessage пишется на Volume, права 0600", (_ndata / "sent-store.json").exists() and oct((_ndata / "sent-store.json").stat().st_mode & 0o777) == "0o600")
 
         # --- синхронизация контактов (фейк) ---

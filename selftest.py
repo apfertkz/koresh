@@ -712,11 +712,11 @@ t529 = err_text(OverloadedError("overloaded_error"))
 t400b = err_text(BadRequestError("Your credit balance is too low to access the Anthropic API."))
 t400x = err_text(BadRequestError("messages: roles must alternate"))
 check("13a. 401 -> про ключ", "ключ" in t401.lower() and "sk-ant" not in t401, t401)
-check("13b. 402 -> про баланс", "баланс" in t402.lower(), t402)
-check("13c. 400 «credit balance» -> про баланс", "баланс" in t400b.lower(), t400b)
-check("13d. 429 -> «перегружен», а не «баланс»", "перегружен" in t429.lower() and "баланс" not in t429.lower(), t429)
-check("13e. 529 -> «перегружен»", "перегружен" in t529.lower() and "баланс" not in t529.lower(), t529)
-check("13f. прочая 400 -> не «баланс»", "баланс" not in t400x.lower(), t400x)
+check("13b. 402 -> про деньги на мозги (в характере Кореша)", "деньги на мозги" in t402.lower() and "billing" in t402.lower(), t402)
+check("13c. 400 «credit balance» -> про деньги на мозги", "деньги на мозги" in t400b.lower() and "billing" in t400b.lower(), t400b)
+check("13d. 429 -> «перегружен», а не «баланс»", "перегружен" in t429.lower() and "деньги" not in t429.lower(), t429)
+check("13e. 529 -> «перегружен»", "перегружен" in t529.lower() and "деньги" not in t529.lower(), t529)
+check("13f. прочая 400 -> не «деньги»", "деньги" not in t400x.lower(), t400x)
 check("13g. все шесть текстов разные", len({t401, t402, t429, t400x, main.ERROR_TEXTS["history"], main.ERROR_TEXTS["down"]}) == 6)
 check("13h. ключ нигде не утёк", not any("sk-ant" in x for x in (t401, t402, t429, t529, t400b, t400x)))
 
@@ -2628,6 +2628,12 @@ for _k, _v in _SAVED21.items():
 
 # ================= 22. WhatsApp в клиентском Корешe (ТЗ-29): код живёт в selftest_wa.py =================
 exec(compile((HERE / "selftest_wa.py").read_text(encoding="utf-8"), "selftest_wa.py", "exec"), globals())
+
+# ================= 23. Деньги на мозги (ТЗ-31): заглушка на нуле, WhatsApp хозяину, счёт в долларах, порог 80%: код в selftest_balance.py =================
+exec(compile((HERE / "selftest_balance.py").read_text(encoding="utf-8"), "selftest_balance.py", "exec"), globals())
+
+# ================= 24. Модули (ТЗ-32): макросы, напоминания и действия по времени, детский режим, уведомления в очередь Телеграма: код в selftest_modules.py =================
+exec(compile((HERE / "selftest_modules.py").read_text(encoding="utf-8"), "selftest_modules.py", "exec"), globals())
 
 # ================= 14. Dockerfile копирует каждый модуль (новый файл не должен выпасть из образа) =================
 _copy = next(l for l in (HERE / "Dockerfile").read_text(encoding="utf-8").splitlines() if l.startswith("COPY ") and ".py" in l)

@@ -136,6 +136,10 @@ async def control(target: str, target_id: str, cap_type: str, instance: str, val
     item = _index[target].get(target_id)
     if item is None:
         return "error: неизвестный id, сначала вызови list_devices"
+    import modules                                   # лениво: modules сам импортирует iot
+    kids = modules.kids_gate(target, item)           # детский режим: только свет (ТЗ-32)
+    if kids:
+        return kids
     refusal = _lock_gate(item, user_text)
     if refusal:
         return refusal

@@ -25,6 +25,7 @@ import config as C
 import iot
 import memory
 import prompts
+import usage
 import wa
 
 router = APIRouter()
@@ -236,12 +237,16 @@ def build_state(request: Request) -> dict:
         "blocked_source": C.source("BLOCKED_NAMES"),
         "allow_locks": _field("ALLOW_LOCKS", C.allow_locks()),
         "lock_phrase": {"set": bool(C.lock_phrase()), "source": C.source("LOCK_PHRASE")},     # саму фразу не отдаём никогда
+        "modules": {n: C.module_on(n) for n in C.MODULE_NAMES},       # какие модули включены в лицензии этого клиента (ТЗ-32)
+        "tz_offset": _field("TZ_OFFSET", C.tz_offset()),
+        "kids_phrase": {"set": bool(C.kids_phrase()), "source": C.source("KIDS_PHRASE")},          # саму фразу не отдаём никогда
         "webhook": {"url": webhook_url(request), "secret_set": bool(C.webhook_secret())},
         "memory": "disk" if memory.disk_ok() else "ram",
         "callback": bool(C.env("INSTALL_CALLBACK_URL") and C.env("INSTALL_TOKEN")),
         "tones": list(C.TONES),
         "license": {"configured": activation.configured(), "active": activation.active()},   # самого пакета здесь нет никогда
         "login_code": login_code,
+        "balance": usage.snapshot(),         # сколько закинуто на Anthropic и сколько насчитано трат (оценка из токенов)
     }
 
 
@@ -371,6 +376,23 @@ async def check_brain(request: Request):
         return _json_ok(status=kind, message=BRAIN_MESSAGES.get(kind, BRAIN_MESSAGES["down"]))
     print("setup: проверка мозга -> ok", flush=True)
     return _json_ok(status="ok", message=BRAIN_MESSAGES["ok"])
+
+
+@router.post("/setup/api/topup")
+async def topup(request: Request):
+    """«Я пополнил»: сумма, которую клиент закинул на Anthropic, и счётчик трат с нуля. 0 = не следить (включено автопополнение)."""
+    _need_auth(request)
+    d = await _body(request)
+    raw = d.get("amount")
+    try:
+        amount = float(str(raw).replace(",", ".").replace("$", "").strip())
+    except ValueError:
+        return _json_err(400, "bad_amount", "Нужна сумма в долларах, например 5.")
+    if not (0 <= amount <= 10000) or amount != amount:
+        return _json_err(400, "bad_amount", "Сумма от 0 до 10000 долларов (0 = не следить за балансом).")
+    amt = usage.topup(amount)
+    print(f"setup: баланс Anthropic: пополнение учтено ({amt} $)", flush=True)
+    return _json_ok(balance=usage.snapshot())
 
 
 BRAIN_MESSAGES = {
@@ -532,6 +554,40 @@ async def home(request: Request):
     persisted = C.save_values(upd)
     return _json_ok(persisted=persisted, locks_enabled=locks_enabled(),
                     overridden=[k for k in ("HOUSEHOLD", "BLOCKED_NAMES", "ALLOW_LOCKS", "LOCK_PHRASE") if C.source(k) == "env"])
+
+
+@router.post("/setup/api/modules")
+async def modules_settings(request: Request):
+    """Настройки модулей (ТЗ-32): часовой пояс напоминаний и кодовая фраза взрослого для детского режима."""
+    _need_auth(request)
+    d = await _body(request)
+    upd = {}
+    if d.get("tz_offset") not in (None, ""):
+        try:
+            tz = float(str(d.get("tz_offset")).replace(",", "."))
+        except ValueError:
+            return _json_err(400, "bad_tz", "Часовой пояс — число часов от UTC, например 5 для Алматы.")
+        if not -12.0 <= tz <= 14.0:
+            return _json_err(400, "bad_tz", "Часовой пояс от -12 до +14.")
+        upd["TZ_OFFSET"] = ("%g" % tz) if tz != 5.0 else None          # 5 = умолчание, в файл не пишем
+    if d.get("clear_kids_phrase"):
+        upd["KIDS_PHRASE"] = None
+    else:
+        phrase = _clean_line(d.get("kids_phrase"), 80)
+        if phrase:
+            if len(phrase) < 6:
+                return _json_err(400, "short_phrase", "Кодовая фраза взрослого: минимум шесть символов, лучше длинная.")
+            if _same_phrase(phrase, C.lock_phrase()):
+                return _json_err(400, "same_phrase", "Эта фраза уже стоит на замках. Придумай другую.")
+            upd["KIDS_PHRASE"] = phrase
+    persisted = C.save_values(upd) if upd else True
+    return _json_ok(persisted=persisted, tz_offset=C.tz_offset(), kids_phrase_set=bool(C.kids_phrase()),
+                    overridden=[k for k in ("TZ_OFFSET", "KIDS_PHRASE") if C.source(k) == "env"])
+
+
+def _same_phrase(a: str, b: str) -> bool:
+    norm = lambda s: " ".join(re.findall(r"[0-9a-zа-я]+", (s or "").lower().replace("ё", "е")))  # noqa: E731
+    return bool(norm(b)) and norm(a) == norm(b)
 
 
 @router.get("/setup/api/heard")

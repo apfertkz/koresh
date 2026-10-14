@@ -16,23 +16,45 @@ VERSION = os.environ.get("APP_VERSION", "dev")
 
 # Что можно задать через /setup и хранить в config.json. Ключ Anthropic и секрет вебхука сюда НЕ входят: только переменные.
 STORED_KEYS = ("YANDEX_IOT_TOKEN", "ASSISTANT_NAME", "TONE", "GENDER", "HOUSEHOLD", "BLOCKED_NAMES",
-               "LOCK_PHRASE", "ALLOW_LOCKS", "WA_CONTACTS", "WA_HIDDEN", "WA_NICKS")
-SECRET_KEYS = ("YANDEX_IOT_TOKEN", "LOCK_PHRASE", "WA_CONTACTS", "WA_HIDDEN", "WA_NICKS")          # значения этих ключей не показываем и не логируем
+               "LOCK_PHRASE", "ALLOW_LOCKS", "WA_CONTACTS", "WA_HIDDEN", "WA_NICKS", "TZ_OFFSET", "KIDS_PHRASE")
+SECRET_KEYS = ("YANDEX_IOT_TOKEN", "LOCK_PHRASE", "WA_CONTACTS", "WA_HIDDEN", "WA_NICKS", "KIDS_PHRASE")          # значения этих ключей не показываем и не логируем
 _CFG = {"sig": None, "data": None}                        # кэш файла по отпечатку (inode, mtime, размер)
 _MEM_ONLY: dict = {}                                       # копия, если диск недоступен: живёт до перезапуска
 # Слой «пакет активации» (см. activation.py): персональные настройки из сервера лицензий. Живёт ТОЛЬКО в оперативке,
 # на диск открытым не пишется. Приоритет: переменная Railway > пакет > config.json > умолчание.
 PACK_KEYS = ("ASSISTANT_NAME", "TONE", "GENDER")
 _PACK: dict = {}
+# Модули (ТЗ-32): флаги из пакета лицензии. Нет флага = модуля нет. Отдельный слой от _PACK, потому что рубильник обязан срабатывать
+# сразу после обновления пакета (раз в час), а не ждать границы эпизода: см. activation.refresh_once.
+MODULE_NAMES = ("macros", "timers", "kids")
+_MODULES: dict = {}          # явные значения рубильника: имя -> True | False
+_PROMO = {"all": False}      # акция запуска / промокод «все модули» (pack.promo_all_modules): всё включено, кроме явно выключенного
+
+
+def set_modules(flags, promo: bool = False) -> None:
+    _MODULES.clear()
+    _PROMO["all"] = promo is True
+    if isinstance(flags, dict):
+        _MODULES.update({k: flags[k] for k in MODULE_NAMES if isinstance(flags.get(k), bool)})
+
+
+def module_on(name: str) -> bool:
+    """Явный флаг главнее акции: рубильник «выключить» работает и у клиента с акцией."""
+    if name in _MODULES:
+        return _MODULES[name]
+    return name in MODULE_NAMES and _PROMO["all"]
 
 
 def set_pack(pack: dict) -> None:
     _PACK.clear()
     _PACK.update(json.loads(json.dumps(pack)))
+    set_modules(_PACK.get("modules"), _PACK.get("promo_all_modules") is True)
 
 
 def clear_pack() -> None:
     _PACK.clear()
+    _MODULES.clear()
+    _PROMO["all"] = False
 
 
 def pack() -> dict:
@@ -255,6 +277,20 @@ def allow_locks() -> bool:
 
 def lock_phrase() -> str:
     return env("LOCK_PHRASE")
+
+
+def tz_offset() -> float:
+    """Часовой пояс хозяина, часы от UTC. По умолчанию Алматы (+5). Мусор -> +5."""
+    try:
+        v = float(env("TZ_OFFSET", "5").replace(",", "."))
+    except ValueError:
+        return 5.0
+    return v if -12.0 <= v <= 14.0 else 5.0
+
+
+def kids_phrase() -> str:
+    """Кодовая фраза взрослого для выключения детского режима (задаётся на /setup). Пусто -> выключение через «ты взрослый?»."""
+    return env("KIDS_PHRASE")
 
 
 def wa_enabled() -> bool:

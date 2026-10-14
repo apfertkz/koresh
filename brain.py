@@ -5,6 +5,7 @@ import config as C
 import honesty
 import iot
 import memory
+import modules
 import prompts
 import usage
 import wa
@@ -53,8 +54,11 @@ TOOLS = [
 
 
 def tools() -> list[dict]:
-    """Инструменты хода: умный дом и память всегда, WhatsApp -- только когда он привязан и есть кому писать."""
-    return TOOLS + wa.TOOLS if wa.available() else TOOLS
+    """Инструменты хода: умный дом и память всегда, WhatsApp -- только когда он привязан и есть кому писать (детям не даём),
+    модули (макросы, напоминания, детский режим) -- только включённые флагом в пакете лицензии."""
+    out = TOOLS + wa.TOOLS if wa.available() and not modules.kids_on() else TOOLS
+    extra = modules.tools()
+    return out + extra if extra else out
 
 
 async def _create(**kw):
@@ -127,8 +131,12 @@ def _refusal_category(resp):
 
 async def think(history: list[dict], uid: str | None = None) -> str:
     """history — список messages, будет дополнен (только в конец). uid — чья долгая память (remember/forget)."""
-    system = [{"type": "text", "text": prompts.system_prompt(), "cache_control": {"type": "ephemeral"}}]
-    wa_active = wa.available()
+    def make_system():
+        return [{"type": "text", "text": prompts.system_prompt(), "cache_control": {"type": "ephemeral"}}]
+    system = make_system()
+    sig = modules.prompt_signature()
+    modules.note_turn(uid, _recent_user_text(history, 1))      # считаем реплику; «нет/стоп» стирает черновик макроса или напоминания
+    wa_active = wa.available() and not modules.kids_on()
     journal = honesty.Journal(wa_active=wa_active)          # что за этот ход реально сделано с умным домом и WhatsApp
     tool_list = tools()
     if wa_active:
@@ -137,7 +145,13 @@ async def think(history: list[dict], uid: str | None = None) -> str:
     def finish(text: str) -> str:
         """Утверждение «сделал» без успешного действия -> честная фраза (и в истории тоже, чтобы модель не верила вранью).
         Ход закончился черновиком WhatsApp: хозяин услышит ровно то, что уйдёт (иначе подставляется каноничная фраза)."""
-        fixed = wa.ensure_readback(uid, text) if journal.wa_drafted else honesty.check(text, journal)
+        text = modules.kids_clean(text)
+        if journal.wa_drafted:
+            fixed = wa.ensure_readback(uid, text)
+        elif journal.mod_drafted:
+            fixed = modules.ensure_readback(uid, text)
+        else:
+            fixed = honesty.check(text, journal)
         if fixed != text:
             print("honesty: заявление о действии без успешного вызова заменено", flush=True)
             kept = [b for b in history[-1]["content"] if getattr(b, "type", None) != "text"] \
@@ -149,7 +163,7 @@ async def think(history: list[dict], uid: str | None = None) -> str:
         if usage.exceeded():
             return prompts.phrase("limit")
         resp = await _create(system=system, tools=tool_list, messages=history, **request_params())
-        usage.add(_tokens(resp))
+        usage.add(_tokens(resp), usage.cost_of(resp, C.model()))
         if resp.stop_reason == "refusal":      # классификатор отказал; пустой ход в историю не кладём
             print(f"brain refusal: {_refusal_category(resp)}", flush=True)
             return prompts.phrase("refusal")
@@ -183,6 +197,14 @@ async def think(history: list[dict], uid: str | None = None) -> str:
                     res = await wa.tool_confirm(uid, _recent_user_text(history, 1))
                     journal.wa_send(res.ok, res.reason)
                     out = res.text
+                elif block.name in modules.TOOL_NAMES:
+                    ut = _recent_user_text(history, 2 if block.name == "macro_run" else 1)
+                    res = await modules.dispatch(block.name, a, uid, ut, journal)
+                    if block.name != "macro_run":            # макрос сам записал каждое действие в журнал
+                        journal.module(res.ok, res.reason)
+                    if res.drafted:
+                        journal.mod_drafted = True
+                    out = res.text
                 elif block.name == "remember":
                     out = memory.store_for(uid).remember(str(a.get("fact", "")))[1] if uid else "error: память недоступна"
                     journal.memory(not out.startswith(("error", "refused")))
@@ -205,4 +227,7 @@ async def think(history: list[dict], uid: str | None = None) -> str:
                     journal.wa_send(False, "WhatsApp не ответил")
             results.append({"type": "tool_result", "tool_use_id": block.id, "content": str(out)[:6000]})
         history.append({"role": "user", "content": results})
+        if modules.prompt_signature() != sig:                  # включили/выключили детский режим: дальше говорим в новом тоне
+            sig = modules.prompt_signature()
+            system, tool_list = make_system(), tools()
     return "Что-то пошло не так, повтори."

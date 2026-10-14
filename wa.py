@@ -678,6 +678,21 @@ def ensure_readback(uid: str | None, reply: str) -> str:
     return f"Сообщение для «{d['name']}»: «{d['text']}». Отправить?"
 
 
+async def notify_owner(text: str) -> bool:
+    """Служебное сообщение хозяину «себе»: на собственный номер привязанного аккаунта (демон знает его сам, мы номера не видим).
+    Без подтверждения и без черновика: это не письмо третьему лицу. В лимит сообщений контактам не засчитывается.
+    WhatsApp не привязан / не на связи -> False, молча."""
+    if not (enabled() and linked()):
+        return False
+    body = clean_text(text)[:MAX_TEXT]
+    if not body:
+        return False
+    j = await _call("POST", "/send", {"self": True, "text": body}, timeout=SEND_TIMEOUT)
+    ok = bool(j and j.get("ok"))
+    print("wa: служебное сообщение хозяину " + ("отправлено" if ok else "не ушло"), flush=True)
+    return ok
+
+
 # ---------- что видит модель ----------
 TOOLS = [
     {

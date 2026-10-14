@@ -29,7 +29,7 @@ STATE_NAME = "license.json"
 PACK_NAME = "pack.enc"
 MAGIC = b"KP1"
 SUPPORTED_SCHEMA = 1
-REFRESH_EVERY = 24 * 3600
+REFRESH_EVERY = 3600          # раз в час: рубильник модулей в админке должен сработать в пределах часа (ТЗ-32)
 REFRESH_TIMEOUT = 3.0
 FLOW_TTL = 600
 
@@ -163,6 +163,13 @@ def sanitize(raw) -> dict | None:
     notes = _s(raw.get("notes"), 1500)
     if notes:
         p["notes"] = notes
+    mods = raw.get("modules")                 # флаги модулей (ТЗ-32): только известные имена и только булевы значения
+    if isinstance(mods, dict):
+        m = {k: mods[k] for k in C.MODULE_NAMES if isinstance(mods.get(k), bool)}
+        if m:
+            p["modules"] = m
+    if raw.get("promo_all_modules") is True:  # акция (ТЗ-33): все модули включены, явное false в modules перекрывает
+        p["promo_all_modules"] = True
     return p
 
 
@@ -219,6 +226,17 @@ def forget(clear_ram: bool = True) -> None:
 
 def active() -> bool:
     return C.pack_active()
+
+
+def auth():
+    """(install_id, токен обновления) этой установки или None, если активации нет. Нужно уведомлениям (notify.py)."""
+    if not configured():
+        return None
+    st = _read_state()
+    rt, iid = st.get("refresh_token"), st.get("install_id")
+    if isinstance(rt, str) and rt and isinstance(iid, str) and iid:
+        return iid, rt
+    return None
 
 
 def apply_pending() -> None:
@@ -347,11 +365,13 @@ async def refresh_once() -> str:
         rt, iid = st.get("refresh_token"), st.get("install_id")
         if not configured() or not rt or not iid or not os.path.exists(_path(PACK_NAME)):
             return "skip"
-        r = await _post("/v1/pack/refresh", {"install_id": iid, "since": int(st.get("pack_version") or 0)},
+        r = await _post("/v1/pack/refresh", {"install_id": iid, "since": int(st.get("pack_version") or 0),
+                                             "version": str(C.VERSION)[:40]},
                         headers={"Authorization": f"Bearer {rt}"}, timeout=REFRESH_TIMEOUT)
         if r.status_code == 410:
             forget(clear_ram=False)
             _PENDING.update(has=True, pack={})
+            C.set_modules({}, False)           # отзыв: модули гаснут сразу, остальное на границе эпизода
             return "revoked"
         if r.status_code != 200:
             return "fail"
@@ -365,17 +385,23 @@ async def refresh_once() -> str:
         st["pack_version"] = j.get("pack_version") if isinstance(j.get("pack_version"), int) else st.get("pack_version")
         _write_state(st)
         _PENDING.update(has=True, pack=pack)
+        C.set_modules(pack.get("modules"), pack.get("promo_all_modules") is True)     # рубильник: модули включаются и гаснут сразу, не ждут границы эпизода
         return "update" if ok else "fail"
     except Exception:  # noqa: BLE001
         return "fail"
 
 
 async def refresh_loop() -> None:
-    """При старте и раз в сутки. Любая ошибка молча проглатывается."""
+    """При старте и раз в час. Любая ошибка молча проглатывается. Заодно повторяем уведомления, которые не ушли."""
     try:
         await asyncio.sleep(5)
         while True:
             await refresh_once()
+            try:
+                import notify
+                await notify.flush()
+            except Exception:  # noqa: BLE001
+                pass
             await asyncio.sleep(REFRESH_EVERY)
     except asyncio.CancelledError:
         raise

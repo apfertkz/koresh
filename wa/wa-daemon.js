@@ -9,6 +9,7 @@
 //   GET  /contacts-> {contacts: [{name, number, saved}], count}   имена из синхронизации контактов WhatsApp (как видит WhatsApp Web)
 //   POST /pair    {phone}      -> {ok:true, code:"ABCD-EFGH"} | {ok:false, error}
 //   POST /send    {to, text}   -> {ok:true} | {ok:false, error}   (to: только цифры номера, с кодом страны)
+//   POST /send    {self:true, text} -> то же, но на собственный номер привязанного аккаунта (служебное хозяину)
 //   POST /logout  {}           -> {ok:true}   отвязать устройство, стереть сессию, поднять новый QR
 //
 // Переменные: WA_TOKEN (обязательна), WA_PORT (8790), WA_AUTH_DIR (./auth), WA_DATA_DIR (родитель WA_AUTH_DIR).
@@ -384,14 +385,23 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/send') {
     return readBody(req, async (body) => {
       if (state !== 'connected' || !sock) return send(200, { ok: false, error: 'not_connected' })
-      let to, text
-      try { ({ to, text } = JSON.parse(body || '{}')) } catch { return send(200, { ok: false, error: 'bad_json' }) }
-      if (!digitsOf(to) || !text) return send(200, { ok: false, error: 'missing_to_or_text' })
+      let to, text, self
+      try { ({ to, text, self } = JSON.parse(body || '{}')) } catch { return send(200, { ok: false, error: 'bad_json' }) }
+      if (!text || (!self && !digitsOf(to))) return send(200, { ok: false, error: 'missing_to_or_text' })
       if (String(text).length > 4000) return send(200, { ok: false, error: 'too_long' })
       try {
-        const [result] = await sock.onWhatsApp(jidOf(to))
-        if (!result || !result.exists) return send(200, { ok: false, error: 'not_on_whatsapp' })
-        const sent = await sock.sendMessage(result.jid, { text: String(text) })
+        let jid
+        if (self) {
+          // служебное сообщение хозяину «себе»: на собственный номер привязанного аккаунта (без суффикса устройства)
+          const me = sock.user && sock.user.id
+          if (!me) return send(200, { ok: false, error: 'no_self' })
+          jid = String(me).replace(/:\d+(?=@)/, '')
+        } else {
+          const [result] = await sock.onWhatsApp(jidOf(to))
+          if (!result || !result.exists) return send(200, { ok: false, error: 'not_on_whatsapp' })
+          jid = result.jid
+        }
+        const sent = await sock.sendMessage(jid, { text: String(text) })
         if (sent && sent.key) sentRemember(sent.key.id, sent.message)
         console.log('[WA] отправлено')
         send(200, { ok: true })
