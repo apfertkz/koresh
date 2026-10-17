@@ -31,7 +31,7 @@ CHARACTER_KEYS = ("ASSISTANT_NAME", "TONE", "GENDER")
 _PACK: dict = {}
 # Модули (ТЗ-32): флаги из пакета лицензии. Нет флага = модуля нет. Отдельный слой от _PACK, потому что рубильник обязан срабатывать
 # сразу после обновления пакета (раз в час), а не ждать границы эпизода: см. activation.refresh_once.
-MODULE_NAMES = ("macros", "timers", "kids")
+MODULE_NAMES = ("macros", "timers", "kids", "secretary")
 _MODULES: dict = {}          # явные значения рубильника: имя -> True | False
 _PROMO = {"all": False}      # акция запуска / промокод «все модули» (pack.promo_all_modules): всё включено, кроме явно выключенного
 

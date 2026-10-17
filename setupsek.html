@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Кореш: читаю WhatsApp вслух</title>
+<style>
+:root{--paper:#f4f0e8;--ink:#20201e;--orange:#ff4d2b;--yellow:#f4cb70;--white:#fffdf8;--green:#2f7d4f;--red:#c0321a;--line:3px solid var(--ink)}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%;overflow-x:hidden}
+body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;overflow-x:hidden}
+header{display:flex;align-items:center;gap:14px;padding:14px 20px;border-bottom:var(--line);background:var(--yellow)}
+header .logo{font-weight:900;font-size:22px;letter-spacing:.04em;text-transform:uppercase}
+header .logo i{font-style:normal;background:var(--ink);color:var(--yellow);padding:0 8px;margin-right:6px}
+header .sub{font-size:14px;opacity:.75}
+header .sp{flex:1}
+main{max-width:640px;margin:0 auto;padding:22px 16px 80px}
+h1{font-size:28px;line-height:1.15;margin:6px 0 10px;font-weight:900}
+h2{font-size:21px;line-height:1.2;margin:0 0 8px;font-weight:900}
+h3{font-size:17px;margin:6px 0 8px;font-weight:800}
+p{margin:8px 0;overflow-wrap:anywhere}
+.small{font-size:14px;opacity:.8}
+.card{background:var(--white);border:var(--line);box-shadow:6px 6px 0 var(--ink);padding:18px;margin:18px 0}
+.btn{font:inherit;font-weight:800;background:var(--orange);color:var(--ink);border:var(--line);box-shadow:4px 4px 0 var(--ink);padding:10px 18px;min-height:44px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;text-align:center;margin:6px 8px 6px 0}
+.btn:active{transform:translate(3px,3px);box-shadow:1px 1px 0 var(--ink)}
+.btn.alt{background:var(--white)}
+.btn.big{font-size:19px;min-height:56px;padding:12px 26px}
+.btn[disabled]{opacity:.5;cursor:wait}
+label{display:block;font-weight:700;margin:14px 0 4px}
+input[type=text],input[type=password],select{width:100%;font:inherit;background:#fff;color:var(--ink);border:var(--line);padding:9px 11px;min-height:44px;border-radius:0}
+input:focus,select:focus,button:focus-visible,a:focus-visible{outline:3px solid var(--orange);outline-offset:2px}
+.note{border:var(--line);padding:10px 14px;margin:12px 0;font-weight:600;overflow-wrap:anywhere}
+.note.ok{background:#dcefe2;border-color:var(--green)}
+.note.bad{background:#f9d9d2;border-color:var(--red)}
+.note.warn{background:var(--yellow)}
+.note.info{background:#fff}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow-wrap:anywhere}
+.hidden{display:none}
+.steps{margin:12px 0;padding:0 0 0 22px}
+.steps li{margin:8px 0}
+.row2{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.opt{display:flex;gap:12px;align-items:center;border:var(--line);background:#fff;padding:10px 12px;margin:8px 0;cursor:pointer;font-weight:400;min-height:44px}
+.opt input{width:20px;height:20px;accent-color:var(--orange);margin:0}
+.who{border:var(--line);background:#fff;margin:10px 0;padding:10px 12px}
+.who.on{background:#dcefe2;border-color:var(--green)}
+.whohead{display:flex;align-items:center;gap:12px;min-height:44px}
+.whohead .nm{flex:1;font-weight:800;overflow-wrap:anywhere}
+.whohead .num{font-weight:400;font-size:13px;opacity:.7;display:block}
+.sw{position:relative;display:inline-block;width:64px;height:44px;flex:none;margin:0;cursor:pointer}
+.sw input{position:absolute;inset:0;width:100%;height:100%;opacity:0;margin:0;cursor:pointer;z-index:2}
+.sw span{position:absolute;inset:0;border:var(--line);background:#fff;transition:background .15s}
+.sw span:after{content:"";position:absolute;top:3px;left:3px;width:32px;height:32px;background:var(--ink);transition:transform .15s}
+.sw input:checked + span{background:var(--green)}
+.sw input:checked + span:after{transform:translateX(20px);background:#fff}
+.sw input:focus-visible + span{outline:3px solid var(--orange);outline-offset:2px}
+.more{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px}
+.more label{margin:0 0 2px;font-size:13px}
+@media (max-width:480px){header{padding:12px 14px}main{padding:16px 14px 70px}.btn{width:100%;margin-right:0}.more{grid-template-columns:1fr}.card{padding:14px;box-shadow:4px 4px 0 var(--ink)}}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo"><i>К</i>Кореш</div>
+  <div class="sub">читаю WhatsApp вслух</div>
+  <div class="sp"></div>
+  <button class="btn alt hidden" id="logout" style="margin:0;padding:6px 12px;box-shadow:none;width:auto">Выйти</button>
+</header>
+<main id="app"><p>Загрузка…</p></main>
+
+<script>
+"use strict";
+const app = document.getElementById('app');
+{ const rc = Element.prototype.replaceChildren; Element.prototype.replaceChildren = function (...k) { return rc.apply(this, k.filter(c => c != null && c !== false)); }; }
+let S = null;
+
+function h(tag, a, ...kids) {
+  const e = document.createElement(tag);
+  if (a) for (const [k, v] of Object.entries(a)) {
+    if (k === 'class') e.className = v;
+    else if (k === 'on') for (const [ev, fn] of Object.entries(v)) e.addEventListener(ev, fn);
+    else if (k === 'value') e.value = v;
+    else if (v === true) e.setAttribute(k, '');
+    else if (v !== false && v != null) e.setAttribute(k, v);
+  }
+  for (const c of kids.flat(Infinity)) {
+    if (c == null || c === false) continue;
+    e.append(c.nodeType ? c : document.createTextNode(String(c)));
+  }
+  return e;
+}
+const note = (kind, ...kids) => h('div', {class: 'note ' + kind, role: 'status'}, ...kids);
+function btn(label, fn, cls) {
+  const b = h('button', {type: 'button', class: 'btn ' + (cls || '')}, label);
+  b.addEventListener('click', async () => { if (b.disabled) return; b.disabled = true; try { await fn(b); } finally { b.disabled = false; } });
+  return b;
+}
+async function api(path, body) {
+  const opt = {credentials: 'same-origin'};
+  if (body !== undefined) { opt.method = 'POST'; opt.headers = {'Content-Type': 'application/json'}; opt.body = JSON.stringify(body); }
+  let r, j = {};
+  try { r = await fetch('/setup/api/' + path, opt); } catch (e) { return {ok: false, status: 0, message: 'Нет связи с сервером. Проверь интернет и попробуй ещё раз.'}; }
+  try { j = await r.json(); } catch (e) { /* не JSON */ }
+  if (r.status === 401 && path !== 'moduli/login') renderLogin('Сессия кончилась, введи код ещё раз.');
+  return Object.assign({status: r.status, ok: r.ok}, j);
+}
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const setLogout = show => document.getElementById('logout').classList.toggle('hidden', !show);
+document.getElementById('logout').addEventListener('click', async () => { await api('moduli/logout', {}); renderLogin(); });
+
+async function copyText(t) {
+  try { await navigator.clipboard.writeText(t); return true; } catch (e) { return false; }
+}
+
+function renderLogin(msg) {
+  setLogout(false);
+  const input = h('input', {type: 'text', class: 'mono', name: 'koresh-login-code', autocomplete: 'off', autocapitalize: 'characters', autocorrect: 'off',
+    spellcheck: 'false', 'data-lpignore': 'true', 'data-1p-ignore': 'true', 'data-form-type': 'other', placeholder: 'KR-XXXX-XXXX-XXXX', 'aria-label': 'Код из бота'});
+  const out = h('div');
+  const go = async () => {
+    out.replaceChildren();
+    const code = input.value.trim();
+    if (!code) { out.append(note('bad', 'Введи код из бота.')); return; }
+    const r = await api('moduli/login', {code});
+    input.value = '';
+    if (r.ok) { start(); return; }
+    out.append(note('bad', r.message || 'Не получилось войти.'));
+  };
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+  app.replaceChildren(h('div', {class: 'card'},
+    h('h1', 0, 'Читаю WhatsApp вслух'),
+    msg ? note('warn', msg) : null,
+    h('p', 0, 'Введи код активации из бота: он начинается с KR- и лежит в чате с ботом (кнопка «⚙️ Мой Кореш» покажет его снова).'),
+    input, out, btn('Войти', go)));
+}
+
+async function reload(flash) {
+  const r = await api('sekretar/state');
+  if (!r.ok) return;
+  S = r;
+  renderMain(flash);
+}
+
+/* ---------- кто в списке ---------- */
+const MODE_LABEL = {text: 'читать текст', name_only: 'только кто написал'};
+function whoRow(c) {
+  const out = h('div');
+  const sw = h('input', {type: 'checkbox', 'aria-label': 'Читать вслух сообщения от ' + c.name});
+  sw.checked = !!c.in_list;
+  const row = h('div', {class: 'who' + (c.in_list ? ' on' : ''), 'data-number': c.number});
+  const send = async (patch, okMsg) => {
+    const r = await api('sekretar/list', Object.assign({number: c.number, on: sw.checked}, patch));
+    if (!r.ok) { out.replaceChildren(note('bad', r.message || 'Не получилось.')); sw.checked = !sw.checked; return false; }
+    if (okMsg) out.replaceChildren(note('ok', okMsg));
+    return true;
+  };
+  sw.addEventListener('change', async () => {
+    const want = sw.checked;
+    const mode = row.__mode ? row.__mode.value : undefined;
+    const ok = await send(mode ? {mode} : {}, want ? 'Теперь читаю вслух сообщения от «' + c.name + '».' : 'Больше не читаю «' + c.name + '».');
+    if (ok) { c.in_list = want; await reload(); }
+  });
+  const head = h('div', {class: 'whohead'},
+    h('div', {class: 'nm'}, c.name, h('span', {class: 'num'}, c.missing ? 'нет в контактах WhatsApp' : '')),
+    h('label', {class: 'sw'}, sw, h('span')));
+  row.append(head);
+  if (c.in_list) {
+    const mode = h('select', {'aria-label': 'Режим для ' + c.name},
+      h('option', {value: 'text'}, MODE_LABEL.text), h('option', {value: 'name_only'}, MODE_LABEL.name_only));
+    mode.value = c.mode;
+    const as = h('input', {type: 'text', maxlength: 40, value: c.as || '', placeholder: 'Как называть (по умолчанию имя из контактов)', 'aria-label': 'Как называть ' + c.name});
+    row.__mode = mode;
+    mode.addEventListener('change', () => send({mode: mode.value}, 'Режим сохранён: ' + MODE_LABEL[mode.value] + '.'));
+    as.addEventListener('change', () => send({as: as.value}, 'Запомнил, как называть.'));
+    row.append(h('div', {class: 'more'}, h('div', 0, h('label', 0, 'Что делать'), mode), h('div', 0, h('label', 0, 'Как называть'), as)));
+  }
+  row.append(out);
+  return row;
+}
+
+function listCard() {
+  const box = h('div');
+  const search = h('input', {type: 'text', placeholder: 'Поиск по контактам', 'aria-label': 'Поиск по контактам', autocomplete: 'off'});
+  const draw = () => {
+    const q = (search.value || '').trim().toLowerCase();
+    const rows = S.contacts.filter(c => c.in_list || !q || c.name.toLowerCase().includes(q)).map(whoRow);
+    box.replaceChildren(...(rows.length ? rows : [note('info', q ? 'Таких контактов нет.' : 'Контактов WhatsApp пока нет. WhatsApp присылает их один раз при привязке: подожди пару минут и обнови страницу.')]));
+  };
+  search.addEventListener('input', draw);
+  draw();
+  return h('div', {class: 'card'},
+    h('h2', 0, 'Кого читать вслух'),
+    h('p', {class: 'small'}, 'Включи переключатель напротив человека, и его сообщения Кореш будет зачитывать на Станции. Группы, рассылки и статусы он не читает никогда. По умолчанию не читается никто.'),
+    search, box);
+}
+
+/* ---------- звонок: сценарий в «Доме с Алисой» ---------- */
+function callCard(paint) {
+  const c = S.call || {};
+  const out = h('div'), list = h('div');
+  if (c.configured && c.scenario) {
+    return h('div', {class: 'card'}, h('h2', 0, 'Звонок на Станцию'),
+      note('ok', '✓ Звонок настроен: сценарий «' + (c.scenario.name || 'без названия') + '».'),
+      h('p', {class: 'small'}, 'Кореш запускает его сам, когда пишет кто-то из списка. Ночью (по умолчанию с 23 до 8) и не чаще раза в 10 минут он не звонит: сообщение придёт в Телеграм.'));
+  }
+  const command = c.command || 'спроси у кореш дома что нового';
+  return h('div', {class: 'card'},
+    h('h2', 0, 'Звонок на Станцию'),
+    h('p', 0, 'Яндекс не даёт навыку заговорить первым. Обход: Кореш сам запускает твой сценарий, Станция открывает навык, и Кореш читает сообщение. Пока сценария нет, сообщения приходят только в Телеграм.'),
+    !c.iot ? note('warn', 'Сначала подключи умный дом (токен Яндекса) на странице /setup: без него я не смогу запустить сценарий.') : null,
+    h('ol', {class: 'steps'},
+      h('li', 0, 'Открой приложение «Дом с Алисой» → «Сценарии» → «+». Условие: любая фраза, например «кореш зайди» (само условие нам не нужно: сценарий запустит сервер).'),
+      h('li', 0, 'Действие: выбери свою Станцию → «Вопрос или команда Алисе» и вставь команду: ', h('b', {class: 'mono'}, command),
+        h('div', 0, btn('Скопировать команду', async () => {
+          const ok = await copyText(command);
+          out.replaceChildren(ok ? note('ok', 'Скопировано. Вставь в сценарий.') : note('warn', 'Не получилось скопировать: выдели команду выше и скопируй руками.'));
+        }, 'alt'))),
+      h('li', 0, 'Сохрани сценарий, вернись сюда и нажми «Найти мой сценарий».')),
+    btn('Найти мой сценарий', async () => {
+      out.replaceChildren(); list.replaceChildren();
+      const f = await api('moduli/call/find', {activation: c.activation});
+      if (!f.ok) { out.replaceChildren(note('bad', f.message || 'Не получилось.')); return; }
+      if (!f.candidates.length) { out.replaceChildren(note('warn', 'Подходящих сценариев не вижу (всего ' + f.total + '). Создай сценарий по шагам выше и нажми ещё раз.')); return; }
+      let chosen = f.suggested || '';
+      const rows = f.candidates.map(x => {
+        const rb = h('input', {type: 'radio', name: 'call-scenario', value: x.id});
+        if (x.id === chosen) rb.checked = true;
+        rb.addEventListener('change', () => { chosen = x.id; });
+        return h('label', {class: 'opt'}, rb, h('span', 0, x.name, x.id === f.suggested ? ' (похоже на твой)' : ''));
+      });
+      list.replaceChildren(
+        note('info', 'Яндекс не показывает, что внутри сценария, поэтому выбираем по названию. Выбери свой: потом кнопка «Проверить» докажет, что он тот.'),
+        ...rows,
+        btn('Выбрать этот сценарий', async () => {
+          if (!chosen) { out.replaceChildren(note('warn', 'Сначала отметь свой сценарий.')); return; }
+          const s = await api('moduli/call/select', {id: chosen});
+          if (!s.ok) { out.replaceChildren(note('bad', s.message || 'Не получилось.')); return; }
+          await reload('Сценарий выбран. Нажми «Проверить».');
+        }));
+    }),
+    out, list);
+}
+
+/* ---------- проверка ---------- */
+function testCard() {
+  const out = h('div');
+  return h('div', {class: 'card'},
+    h('h2', 0, 'Проверка'),
+    h('p', 0, 'Кнопка имитирует сообщение от первого человека из списка: Станция должна заговорить. Никому ничего не отправляется.'),
+    btn('Проверить', async () => {
+      out.replaceChildren(note('info', 'Запускаю… Станция должна сама открыть навык и прочитать сообщение.'));
+      const t = await api('sekretar/test', {});
+      if (!t.ok) { out.replaceChildren(note('bad', t.message || 'Не получилось.')); return; }
+      for (let i = 0; i < 20; i++) {
+        const s = await api('sekretar/test-status');
+        if (s.status === 'answered') { out.replaceChildren(note('ok', 'Дозвонился: Станция заговорила, чтение WhatsApp работает.')); return; }
+        if (s.status === 'failed') { out.replaceChildren(note('bad', 'Сценарий не запустился: ' + (s.message || 'ошибка') + '.')); return; }
+        if (s.status === 'no_answer') { out.replaceChildren(note('bad', 'Сценарий запустился, но навык не открылся. Проверь в сценарии команду и активационное имя.')); return; }
+        await sleep(2000);
+      }
+      out.replaceChildren(note('warn', 'Навык пока не открылся. Подожди минуту: если Станция так и не заговорила, проверь команду в сценарии.'));
+    }, 'big'),
+    out);
+}
+
+function voiceCard() {
+  return h('div', {class: 'card'},
+    h('h2', 0, 'Можно просто сказать'),
+    h('ul', {class: 'small'},
+      h('li', 0, '«Кореш, читай сообщения от жены» — добавить человека (я переспрошу, правильно ли понял).'),
+      h('li', 0, '«Перестань читать маму» — убрать.'),
+      h('li', 0, '«Кого ты читаешь вслух?» — перечислю.'),
+      h('li', 0, '«Не читай вотсап сегодня», «можешь читать вотсап» — пауза и обратно.'),
+      h('li', 0, '«Ответь ей: скоро буду» — отвечу тому, кто писал последним, но отправлю только после твоего «да».')));
+}
+
+function renderMain(flash) {
+  setLogout(true);
+  if (!S.module) {
+    app.replaceChildren(h('h1', 0, 'Читаю WhatsApp вслух'),
+      h('div', {class: 'card'}, note('info', 'Чтение WhatsApp вслух у тебя подключается отдельно. Напиши в бот-установщик, он подскажет.'),
+        h('a', {class: 'btn alt', href: '/setup/moduli'}, 'К модулям')));
+    return;
+  }
+  const head = [h('h1', 0, 'Читаю WhatsApp вслух'),
+    h('p', {class: 'small'}, 'Версия ' + S.version + '. Другие модули и баланс: ', h('a', {href: '/setup/moduli'}, '/setup/moduli'), '.'),
+    flash ? note('ok', flash) : null];
+  if (!S.linked) {
+    app.replaceChildren(...head, h('div', {class: 'card'},
+      note('warn', 'Сначала привяжи WhatsApp: открой ', h('a', {href: '/setup'}, '/setup'), ', раздел WhatsApp. Без привязки читать нечего.'), voiceCard()));
+    return;
+  }
+  const en = h('input', {type: 'checkbox'});
+  en.checked = !!S.enabled;
+  const outE = h('div');
+  en.addEventListener('change', async () => {
+    const r = await api('sekretar/settings', {enabled: en.checked});
+    if (!r.ok) { en.checked = !en.checked; outE.replaceChildren(note('bad', r.message || 'Не получилось.')); return; }
+    outE.replaceChildren(note('ok', en.checked ? 'Читаю вслух.' : 'Вслух не читаю: сообщения будут приходить в Телеграм.'));
+  });
+  app.replaceChildren(...head,
+    S.paused ? note('info', 'На сегодня ты просил не читать вслух. Завтра снова.') : null,
+    h('label', {class: 'opt'}, en, h('span', 0, 'Читать вслух входящие от выбранных людей')), outE,
+    listCard(), callCard(), testCard(), voiceCard());
+}
+
+async function start() {
+  const r = await api('sekretar/state');
+  if (!r.ok) { renderLogin(r.status === 401 ? undefined : (r.message || undefined)); return; }
+  S = r;
+  renderMain();
+}
+
+(async () => {
+  const me = await api('moduli/me');
+  if (me.ok && me.authed) start(); else renderLogin();
+})();
+</script>
+</body>
+</html>

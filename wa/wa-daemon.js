@@ -1,5 +1,6 @@
 // WhatsApp-демон Кореша: сайдкар в том же контейнере. Держит ОДНУ сессию и шлёт текст по локальному HTTP.
-// Только отправка: входящие не читаем и не храним (обработчика messages.upsert нет, историю не синхронизируем).
+// Отправка + очередь входящих для «секретаря» (ТЗ-36). Входящие пишутся ТОЛЬКО пока Python держит файл-флаг inbox.json (модуль secretary включён и
+// список «читать» не пуст); текст сохраняется лишь у номеров из этого списка. Историю не синхронизируем, чаты не читаем.
 // Слушает 127.0.0.1, каждый запрос с заголовком X-WA-Token (случайный на запуск, его знает только Python-сервер).
 // Перенесён из моста учредителя (Baileys 7.0.0-rc14), добавлены: токен, QR и код сопряжения по HTTP, выход, ветка loggedOut.
 //
@@ -11,6 +12,8 @@
 //   POST /send    {to, text}   -> {ok:true} | {ok:false, error}   (to: только цифры номера, с кодом страны)
 //   POST /send    {self:true, text} -> то же, но на собственный номер привязанного аккаунта (служебное хозяину)
 //   POST /logout  {}           -> {ok:true}   отвязать устройство, стереть сессию, поднять новый QR
+//   GET  /inbox?after=N -> {ok, events:[{seq, ts, scope, number, kind, text, push}], latest, ready}  входящие (только при наличии inbox.json);
+//        scope: user | group | broadcast | status | newsletter | self (свои исходящие) | stale (старше 3 минут). Текст только у user из списка.
 //
 // Переменные: WA_TOKEN (обязательна), WA_PORT (8790), WA_AUTH_DIR (./auth), WA_DATA_DIR (родитель WA_AUTH_DIR).
 
@@ -36,6 +39,7 @@ const PORT = process.env.WA_PORT ? Number(process.env.WA_PORT) : 8790
 const LINKED_FILE = path.join(DATA_DIR, 'linked.json')
 const SENT_FILE = path.join(DATA_DIR, 'sent-store.json')
 const CONTACTS_FILE = path.join(DATA_DIR, 'contacts-sync.json')
+const INBOX_FLAG = path.join(DATA_DIR, 'inbox.json')
 try { fs.mkdirSync(AUTH_DIR, { recursive: true, mode: 0o700 }) } catch {}
 try { fs.chmodSync(AUTH_DIR, 0o700) } catch {}
 
@@ -79,6 +83,8 @@ function forgetContacts() {
   if (contactsTimer) { clearTimeout(contactsTimer); contactsTimer = null }
   contactMap.clear()
   lidToPn.clear()
+  inbox.length = 0
+  seenIds.clear()
   connectedAt = 0
   try { fs.unlinkSync(CONTACTS_FILE) } catch {}
 }
@@ -180,6 +186,8 @@ function contactList() {
     if (!name) continue
     const prev = byNum.get(num)
     const item = { name: name.slice(0, 60), number: num, saved: !!c.name }
+    const lid = c.lid || [...lidToPn.entries()].find(([, v]) => v === num)?.[0]
+    if (lid) item.lid = lid
     if (!prev || (item.saved && !prev.saved)) byNum.set(num, item)
   }
   return [...byNum.values()].sort((a, b) => a.name.localeCompare(b.name, 'ru'))
@@ -192,15 +200,127 @@ function scheduleContactsSave() {
     try {
       fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 })
       const tmp = CONTACTS_FILE + '.tmp'
-      fs.writeFileSync(tmp, JSON.stringify({ at: Math.floor(Date.now() / 1000), contacts: contactList() }), { mode: 0o600 })
+      fs.writeFileSync(tmp, JSON.stringify({ at: Math.floor(Date.now() / 1000), contacts: contactList(), lids: Object.fromEntries(lidToPn) }), { mode: 0o600 })
       fs.renameSync(tmp, CONTACTS_FILE)
     } catch (e) { console.error('[WA] не смог сохранить контакты:', e && e.message || e) }
   }, 1500)
 }
 try {
   const raw = JSON.parse(fs.readFileSync(CONTACTS_FILE, 'utf8'))
-  for (const c of raw.contacts || []) contactMap.set(c.number + '@s.whatsapp.net', { id: c.number + '@s.whatsapp.net', pn: c.number, ...(c.saved ? { name: c.name } : { notify: c.name }) })
+  for (const c of raw.contacts || []) {
+    contactMap.set(c.number + '@s.whatsapp.net', { id: c.number + '@s.whatsapp.net', pn: c.number, ...(c.lid ? { lid: c.lid } : {}), ...(c.saved ? { name: c.name } : { notify: c.name }) })
+    if (c.lid) lidToPn.set(c.lid, c.number)
+  }
+  for (const [lid, pn] of Object.entries(raw.lids || {})) if (/^\d{8,15}$/.test(String(pn))) lidToPn.set(lid, String(pn))
 } catch {}
+
+// ---------- входящие для «секретаря» (ТЗ-36) ----------
+// Пишем только пока лежит файл-флаг inbox.json ({numbers: [последние 10 цифр]}), его держит Python. Нет файла -> обработчик ничего не читает и не хранит.
+// Текст сохраняем лишь у личных чатов людей из списка; у остальных приходит событие без текста (Python запишет причину в журнал). Группы, статусы,
+// рассылки, каналы и свои исходящие -- события без номера и текста. Очередь живёт в оперативке 10 минут. Номера и тексты в журнал демона не пишем.
+const INBOX_TTL_MS = 10 * 60 * 1000
+const INBOX_MAX = 200
+const STALE_MS = 3 * 60 * 1000
+const inbox = []
+let inboxSeq = Date.now() * 1000        // монотонно и после перезапуска демона
+const seenIds = new Map()               // id сообщения -> метка: Baileys иногда отдаёт одно и то же дважды
+let flagCache = { mt: 0, set: null }
+
+function tail10(d) { return String(d || '').replace(/\D/g, '').slice(-10) }
+function inboxNumbers() {
+  try {
+    const st = fs.statSync(INBOX_FLAG)
+    if (flagCache.set && flagCache.mt === st.mtimeMs) return flagCache.set
+    const j = JSON.parse(fs.readFileSync(INBOX_FLAG, 'utf8'))
+    const set = new Set((Array.isArray(j.numbers) ? j.numbers : []).map(tail10).filter(Boolean))
+    flagCache = { mt: st.mtimeMs, set }
+    return set
+  } catch { flagCache = { mt: 0, set: null }; return null }
+}
+function inboxGc() {
+  const now = Date.now()
+  while (inbox.length && (now - inbox[0].ts > INBOX_TTL_MS || inbox.length > INBOX_MAX)) inbox.shift()
+  for (const [id, t] of seenIds) if (now - t > INBOX_TTL_MS) seenIds.delete(id)
+}
+function unwrap(msg) {
+  let m = msg || {}
+  for (let i = 0; i < 4; i++) {
+    const inner = m.ephemeralMessage?.message || m.viewOnceMessage?.message || m.viewOnceMessageV2?.message ||
+      m.documentWithCaptionMessage?.message || m.editedMessage?.message
+    if (!inner) break
+    m = inner
+  }
+  return m
+}
+// -> { kind, text } | null (реакции, служебные и пустые сообщения пропускаем)
+function describeMessage(message) {
+  const m = unwrap(message)
+  const text = m.conversation || m.extendedTextMessage?.text || m.imageMessage?.caption || m.videoMessage?.caption || ''
+  if (text) return { kind: 'text', text: String(text) }
+  if (m.audioMessage) return { kind: 'audio', text: '' }
+  if (m.imageMessage) return { kind: 'image', text: '' }
+  if (m.videoMessage) return { kind: 'video', text: '' }
+  if (m.stickerMessage) return { kind: 'sticker', text: '' }
+  if (m.documentMessage) return { kind: 'document', text: '' }
+  if (m.locationMessage || m.liveLocationMessage) return { kind: 'location', text: '' }
+  if (m.contactMessage || m.contactsArrayMessage) return { kind: 'contact', text: '' }
+  return null
+}
+function digitsOfJid(jid) { return String(jid || '').split('@')[0].split(':')[0].replace(/\D/g, '') }
+// Личный чат от @lid: телефон берём из remoteJidAlt, затем из своей таблицы lid->номер (она переживает перезапуск), затем из репозитория Baileys
+async function phoneOf(key) {
+  const jid = String(key.remoteJid || '')
+  if (jid.endsWith('@s.whatsapp.net')) return digitsOfJid(jid)
+  if (key.remoteJidAlt && String(key.remoteJidAlt).endsWith('@s.whatsapp.net')) {
+    const pn = digitsOfJid(key.remoteJidAlt)
+    if (pn) { if (!lidToPn.has(jid)) { lidToPn.set(jid, pn); scheduleContactsSave() } return pn }
+  }
+  if (lidToPn.has(jid)) return lidToPn.get(jid)
+  try {
+    const pn = await Promise.race([sock?.signalRepository?.lidMapping?.getPNForLID(jid), new Promise((r) => setTimeout(() => r(null), 1500))])
+    if (pn) { const d = digitsOfJid(pn); if (d) { lidToPn.set(jid, d); scheduleContactsSave(); return d } }
+  } catch {}
+  return ''
+}
+function tsMs(m) {
+  let t = m.messageTimestamp
+  if (t && typeof t === 'object') t = typeof t.toNumber === 'function' ? t.toNumber() : Number(t.low)
+  t = Number(t)
+  return Number.isFinite(t) && t > 0 ? t * 1000 : Date.now()
+}
+function inboxPush(e) {
+  inboxGc()
+  inbox.push({ seq: ++inboxSeq, ts: Date.now(), number: '', kind: '', text: '', push: '', ...e })
+}
+async function onUpsert({ messages, type }) {
+  if (type !== 'notify') return
+  const nums = inboxNumbers()
+  if (!nums) return                                    // секретарь выключен: ничего не читаем и не храним
+  for (const m of messages || []) {
+    try {
+      const key = m.key || {}
+      const jid = String(key.remoteJid || '')
+      if (!jid) continue
+      if (key.id) {
+        if (seenIds.has(key.id)) continue
+        seenIds.set(key.id, Date.now())
+      }
+      if (jid === 'status@broadcast') { inboxPush({ scope: 'status' }); continue }
+      if (jid.endsWith('@g.us')) { inboxPush({ scope: 'group' }); continue }
+      if (jid.endsWith('@newsletter')) { inboxPush({ scope: 'newsletter' }); continue }
+      if (jid.includes('broadcast')) { inboxPush({ scope: 'broadcast' }); continue }
+      if (!(jid.endsWith('@s.whatsapp.net') || jid.endsWith('@lid'))) continue
+      if (key.fromMe) { inboxPush({ scope: 'self' }); continue }
+      const d = describeMessage(m.message)
+      if (!d) continue
+      const number = await phoneOf(key)
+      if (Date.now() - tsMs(m) > STALE_MS) { inboxPush({ scope: 'stale', number, kind: d.kind }); continue }
+      const listed = !!number && nums.has(tail10(number))
+      inboxPush({ scope: 'user', number, kind: d.kind, text: listed && d.kind === 'text' ? d.text : '', push: listed || !m.pushName ? '' : String(m.pushName).slice(0, 40) })
+      console.log('[WA] входящее в очереди секретаря, область user, тип', d.kind)
+    } catch (e) { console.error('[WA] входящее не разобрал:', e && e.name || typeof e) }
+  }
+}
 
 function wipeAuth() {
   try {
@@ -221,6 +341,7 @@ function killOldSock() {
   if (!old) return
   try { old.ev.removeAllListeners('connection.update') } catch {}
   try { old.ev.removeAllListeners('creds.update') } catch {}
+  try { old.ev.removeAllListeners('messages.upsert') } catch {}
   try { old.end(undefined) } catch {}
 }
 
@@ -262,6 +383,7 @@ async function start() {
     mine.ev.on('contacts.update', (list) => { if (sock === mine) contactIngest(list) })
     mine.ev.on('messaging-history.set', (h) => { if (sock === mine && h) contactIngest(h.contacts) })
     mine.ev.on('lid-mapping.update', (m) => { if (sock === mine) contactIngestLid(m) })
+    mine.ev.on('messages.upsert', (u) => { if (sock === mine) onUpsert(u) })
     mine.ev.on('connection.update', (u) => {
       if (sock !== mine) return
       const { connection, lastDisconnect, qr } = u
@@ -360,6 +482,11 @@ const server = http.createServer((req, res) => {
       const list = contactList()
       send(200, { ok: true, contacts: list, count: list.length })
     })
+  }
+  if (req.method === 'GET' && req.url.startsWith('/inbox')) {
+    const after = Number((/[?&]after=(\d+)/.exec(req.url) || [])[1] || 0)
+    inboxGc()
+    return send(200, { ok: true, events: inbox.filter((e) => e.seq > after), latest: inboxSeq, ready: state === 'connected' })
   }
   if (req.method === 'GET' && req.url === '/qr') {
     return send(200, { ok: true, qr: lastQR })

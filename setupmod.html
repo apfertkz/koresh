@@ -129,6 +129,7 @@ function modulesCard() {
     h('ul', {class: 'mods'}, S.modules.map(m => h('li', 0,
       h('b', 0, m.title), h('span', {class: 'tag' + (m.on ? ' on' : '')}, m.on ? 'включён' : 'не подключён'),
       h('div', {class: 'small'}, m.about),
+      m.id === 'secretary' && m.on ? h('a', {class: 'btn alt', href: '/setup/sekretar'}, 'Выбрать, кого читать вслух') : null,
       m.on ? null : h('div', {class: 'small'}, 'Подключается отдельно: напиши в бот-установщик, он подскажет.')))));
 }
 
@@ -275,7 +276,7 @@ function renderMain() {
     h('h1', 0, 'Мой Кореш'),
     h('p', {class: 'small'}, 'Версия ' + S.version + '. Полная настройка сервера: ', h('span', {class: 'mono'}, location.origin + '/setup'), '.'),
     S.link && !S.link.ok ? note('warn', S.link.hint) : null,
-    modulesCard(), settingsCard(), S.modules.some(m => m.id === 'timers' && m.on) ? h('div', {class: 'card'}, callBlock()) : null, balanceCard());
+    modulesCard(), settingsCard(), S.modules.some(m => (m.id === 'timers' || m.id === 'secretary') && m.on) ? h('div', {class: 'card'}, callBlock()) : null, balanceCard());
 }
 
 async function start() {

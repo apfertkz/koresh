@@ -2645,6 +2645,9 @@ exec(compile((HERE / "selftest_proactive.py").read_text(encoding="utf-8"), "self
 # ================= 27. Тон «С матом» не доходил до ответа: память с «мат не включается», приоритет env/setup/пакет, смена тона = новый эпизод: код в selftest_tone.py =================
 exec(compile((HERE / "selftest_tone.py").read_text(encoding="utf-8"), "selftest_tone.py", "exec"), globals())
 
+# ================= 28. WhatsApp-секретарь (ТЗ-36): входящие от «своих» голосом на Станции, голосовая настройка, ответ, страница /setup/sekretar: код в selftest_secretary.py =================
+exec(compile((HERE / "selftest_secretary.py").read_text(encoding="utf-8"), "selftest_secretary.py", "exec"), globals())
+
 # ================= 14. Dockerfile копирует каждый модуль (новый файл не должен выпасть из образа) =================
 _copy = next(l for l in (HERE / "Dockerfile").read_text(encoding="utf-8").splitlines() if l.startswith("COPY ") and ".py" in l)
 _mods = {f.name for f in HERE.glob("*.py") if not f.name.startswith("selftest")}

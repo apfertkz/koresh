@@ -730,8 +730,8 @@ exports.default = function makeWASocket(opts) {
         c401c = _nhttp("POST", "/send", {"to": "77015551234", "text": "x"}, token="")
         check("22j2. без токена и с чужим токеном демон отвечает 401 на все ручки, отправка закрыта", c401[0] == 401 and c401b[0] == 401 and c401c[0] == 401)
         ev_names = s1[0]["events"]
-        check("22j3. входящие не читаем: обработчика messages.upsert нет; подписки только creds/connection/контакты",
-              "messages.upsert" not in ev_names and set(ev_names) <= {"creds.update", "connection.update", "contacts.upsert", "contacts.update", "messaging-history.set", "lid-mapping.update"}, str(ev_names))
+        check("22j3. входящие читаются только для секретаря (ТЗ-36) и только по файлу-флагу inbox.json (проверки 28n); подписки: creds/connection/контакты/messages.upsert",
+              set(ev_names) <= {"creds.update", "connection.update", "contacts.upsert", "contacts.update", "messaging-history.set", "lid-mapping.update", "messages.upsert"}, str(ev_names))
         check("22j3a. настройки сокета: markOnlineOnConnect/syncFullHistory/getMessage заданы, логгер тихий",
               {"markOnlineOnConnect", "syncFullHistory", "getMessage", "logger", "auth"} <= set(s1[0]["opts"]), str(s1[0]["opts"]))
         st0 = _nhttp("GET", "/status")[1]
@@ -1069,8 +1069,8 @@ check("22m1. Baileys закреплён ровно 7.0.0-rc14 (package.json бе
 check("22m2. Dockerfile: стадия node:22-slim с npm ci по lock, в итоговый образ идут node, node_modules, wa-daemon.js и wa.py",
       "FROM node:22-slim" in dock22 and "npm ci" in dock22 and "package-lock.json" in dock22 and "COPY --from=wa /usr/local/bin/node" in dock22
       and "COPY --from=wa /wa/node_modules" in dock22 and "wa/wa-daemon.js" in dock22 and " wa.py " in dock22)
-check("22m3. демон слушает только 127.0.0.1, токен в заголовке сверяется через timingSafeEqual, входящие не читаются, сообщения не логируются",
-      "'127.0.0.1'" in daemon_src and "timingSafeEqual" in daemon_src and "X-WA-Token" in daemon_src and "ev.on('messages" not in daemon_src
+check("22m3. демон слушает только 127.0.0.1, токен в заголовке сверяется через timingSafeEqual, входящие пишутся только по файлу-флагу inbox.json, сообщения не логируются",
+      "'127.0.0.1'" in daemon_src and "timingSafeEqual" in daemon_src and "X-WA-Token" in daemon_src and "INBOX_FLAG" in daemon_src and "if (!nums) return" in daemon_src
       and "markOnlineOnConnect: false" in daemon_src)
 check("22m4. segno закреплён в requirements; wa/node_modules и wa/auth не попадают в git и в контекст сборки",
       "segno==" in (HERE / "requirements.txt").read_text(encoding="utf-8") and "wa/node_modules" in (HERE / ".dockerignore").read_text(encoding="utf-8")

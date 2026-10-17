@@ -324,7 +324,7 @@ check("24r1. refresh=update: статус ok, время проставлено"
 with TestClient(main.app) as _tc24r:
     hj = _tc24r.get("/health").json()
 check("24r2. /health: pack_active, флаги модулей, last_refresh_at (ISO) и last_refresh_status=ok",
-      hj.get("pack_active") is True and hj.get("modules") == {"macros": True, "timers": True, "kids": True} and hj.get("last_refresh_status") == "ok"
+      hj.get("pack_active") is True and hj.get("modules") == {"macros": True, "timers": True, "kids": True, "secretary": False} and hj.get("last_refresh_status") == "ok"
       and re.match(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$", str(hj.get("last_refresh_at"))), str(hj))
 check("24r3. в /health нет секретов (токен обновления, seed, install_id, Yandex ID)",
       not any(x in json.dumps(hj) for x in (RT24, IID24, "seed-", "1000000001")), json.dumps(hj)[:200])
@@ -369,7 +369,7 @@ check("24m1. сервер: версия та же (since=1), но модули �
       and not C.module_on("timers"), activation.refresh_info()["status"])
 with TestClient(main.app) as _tc24m:
     hjm = _tc24m.get("/health").json()
-check("24m2. /health показывает включённые модули", hjm.get("modules") == {"macros": True, "timers": False, "kids": True}, str(hjm))
+check("24m2. /health показывает включённые модули", hjm.get("modules") == {"macros": True, "timers": False, "kids": True, "secretary": False}, str(hjm))
 activation.reset_for_tests()
 check("24m3. после перезапуска модули читаются с диска (пакет на диске переписан)", activation.load() and C.module_on("macros") and C.module_on("kids") and not C.module_on("timers"))
 check("24m4. версия пакета в license.json не тронута (это не обновление пакета)", activation._read_state().get("pack_version") == 1)
@@ -428,18 +428,18 @@ tm37.post("/setup/api/moduli/login", json={"code": "refresh-code-37"})
 n0 = len(LIC24.refreshes)
 sm37 = tm37.get("/setup/api/moduli/state").json()
 check("24r13. открыл страницу модулей -> пакет подтянулся сразу: макросы и напоминания «включён», связь ok",
-      [m["on"] for m in sm37["modules"]] == [True, True, False] and sm37["link"] == {"ok": True} and len(LIC24.refreshes) == n0 + 1, str(sm37)[:300])
+      [m["on"] for m in sm37["modules"]] == [True, True, False, False] and sm37["link"] == {"ok": True} and len(LIC24.refreshes) == n0 + 1, str(sm37)[:300])
 tm37.get("/setup/api/moduli/state")
 check("24r14. повторное открытие в пределах 20 с не дёргает сервер лицензий", len(LIC24.refreshes) == n0 + 1)
 activation._REFRESH["tried"] = 0.0
 LIC24.pack, LIC24.version = {"schema": 1, "version": 3, "modules": {"macros": True, "timers": True, "kids": True}}, 3
 sm37 = tm37.get("/setup/api/moduli/state").json()
-check("24r15. по истечении окна новое включение (kids) видно на странице сразу", [m["on"] for m in sm37["modules"]] == [True, True, True])
+check("24r15. по истечении окна новое включение (kids) видно на странице сразу", [m["on"] for m in sm37["modules"]] == [True, True, True, False])
 activation._REFRESH["tried"] = 0.0
 LIC24.down = True
 sm37 = tm37.get("/setup/api/moduli/state").json()
 check("24r16. сервер лицензий лёг: страница открывается, модули прежние, есть понятная подсказка про связь",
-      sm37["ok"] and [m["on"] for m in sm37["modules"]] == [True, True, True] and sm37["link"]["ok"] is False and "net_ConnectError" in sm37["link"]["hint"], str(sm37["link"]))
+      sm37["ok"] and [m["on"] for m in sm37["modules"]] == [True, True, True, False] and sm37["link"]["ok"] is False and "net_ConnectError" in sm37["link"]["hint"], str(sm37["link"]))
 LIC24.down = False
 os.environ.pop("SETUP_CODE", None)
 setupwiz.reset_for_tests()
@@ -967,7 +967,7 @@ setupwiz.reset_for_tests()
 tcm = _TC(main.app)
 tcm.post("/setup/api/login", json={"code": os.environ["SETUP_CODE"], "reopen": True})
 st = tcm.get("/setup/api/state").json()
-check("24f1. /setup/api/state: какие модули включены, пояс +5 по умолчанию, фраза не задана", st["modules"] == {"macros": False, "timers": False, "kids": False}
+check("24f1. /setup/api/state: какие модули включены, пояс +5 по умолчанию, фраза не задана", st["modules"] == {"macros": False, "timers": False, "kids": False, "secretary": False}
       and st["tz_offset"]["value"] == 5.0 and st["kids_phrase"]["set"] is False, str(st.get("modules")))
 _mods24("timers", "kids")
 r = tcm.post("/setup/api/modules", json={"tz_offset": "3", "kids_phrase": GOOD_PHRASE24})

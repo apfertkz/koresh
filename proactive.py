@@ -8,7 +8,7 @@
 Правила, чтобы не бесить: тихие часы (по умолчанию 23:00-08:00) -> не звоним, уходит в Телеграм/WhatsApp, и утром старое не досыпаем; не чаще раза
 в 10 минут и 6 в час; события, подошедшие вместе, -> один звонок, Кореш перечисляет; «не звони мне сегодня» / «больше не звони» / «можешь звонить»;
 человек уже в сессии -> не звоним, говорим в его текущей сессии (со следующей реплики). Не дозвонились за 3 минуты (сессия не открылась, сценарий не
-запустился, сценарий не настроен) -> старый путь: Телеграм и WhatsApp. Проактив -- часть модуля «Напоминания» (timers): без флага не звоним.
+запустился, сценарий не настроен) -> старый путь: Телеграм и WhatsApp. Проактив -- часть модуля «Напоминания» (timers) и модуля secretary (WhatsApp-секретарь, ТЗ-36): без обоих флагов не звоним.
 
 Очередь живёт на Volume (MEMORY_DIR/proactive.json) и переживает перезапуск. Время и часы можно подменять в воротах (_now)."""
 import json
@@ -34,6 +34,26 @@ MAX_EVENTS = 30
 SPOKEN_MAX = 900
 
 ORD = ("Первое", "Второе", "Третье", "Четвёртое", "Пятое", "Шестое")
+
+# ТЗ-36: события WhatsApp-секретаря идут тем же путём. Отличия: в Телеграм (а не в WhatsApp «себе»: сообщение и так в WhatsApp) и с причиной, почему не озвучено.
+WA_KIND = "wa_message"
+NO_SELF_KINDS = (WA_KIND,)                 # эти виды в WhatsApp «себе» не дублируем
+REASON_KINDS = (WA_KIND,)
+REASON_TEXT = {
+    "quiet": "сейчас тихие часы, вслух не читал",
+    "no_scenario": "сценарий-звонок не настроен, вслух не читал",
+    "off": "ты просил не звонить первым, вслух не читал",
+    "paused": "ты просил не звонить сегодня, вслух не читал",
+    "sec_off": "ты просил не читать WhatsApp вслух",
+    "sec_paused": "ты просил не читать WhatsApp сегодня",
+    "limit_gap": "я и так недавно звонил, не стал дёргать",
+    "limit_hour": "я и так уже много раз звонил за час",
+    "call_failed": "звонок на Станцию не вышел",
+    "timeout": "Станция не откликнулась за 3 минуты",
+    "kids": "включён детский режим",
+    "no_call": "вслух не читал",
+}
+ITEM_MAX = {WA_KIND: 420}
 
 
 def _now() -> float:
@@ -75,9 +95,10 @@ def _data() -> dict:
         calls = [float(x) for x in (d.get("calls") or []) if isinstance(x, (int, float))]
         test = d.get("test") if isinstance(d.get("test"), dict) else {}
         last = d.get("last") if isinstance(d.get("last"), dict) else {}
+        sec_test = d.get("sec_test") if isinstance(d.get("sec_test"), dict) else {}
         _S.update(path=p, data={"events": evs, "calls": calls, "off": d.get("off") is True,
                                 "pause_until": float(d.get("pause_until") or 0), "hint_at": float(d.get("hint_at") or 0),
-                                "test": test, "last": last})
+                                "test": test, "sec_test": sec_test, "last": last})
     return _S["data"]
 
 
@@ -92,7 +113,8 @@ def _save() -> bool:
 
 # ---------- настройки ----------
 def module_on() -> bool:
-    return C.module_on("timers")
+    """Звонок на Станцию нужен модулям «Напоминания» и «Чтение WhatsApp вслух» (ТЗ-36): хватает любого из двух."""
+    return C.module_on("timers") or C.module_on("secretary")
 
 
 def scenario_id() -> str:
@@ -236,67 +258,109 @@ def _limit_hit(now: float) -> str:
     return ""
 
 
-def decide(now: float, priority: str = "normal") -> tuple[str, str]:
-    """('call'|'join'|'session', '') или ('tg', причина)."""
+def decide(now: float, priority: str = "normal", force: bool = False) -> tuple[str, str]:
+    """('call'|'join'|'session', '') или ('tg', причина). force (кнопка «Проверить» секретаря): тихие часы, паузы и лимиты не мешают, нужен только настроенный звонок."""
     if not configured():
         return "tg", "no_scenario"
-    if _data()["off"]:
-        return "tg", "off"
-    if paused(now):
-        return "tg", "paused"
-    if priority != "alarm" and is_quiet(now):
-        return "tg", "quiet"
+    if not force:
+        if _data()["off"]:
+            return "tg", "off"
+        if paused(now):
+            return "tg", "paused"
+        if priority != "alarm" and is_quiet(now):
+            return "tg", "quiet"
     if _inflight(now) is not None:
         return "join", ""
     if in_session(now):
         return "session", ""
-    lim = _limit_hit(now)
-    if lim:
-        return "tg", "limit_" + lim
+    if not force:
+        lim = _limit_hit(now)
+        if lim:
+            return "tg", "limit_" + lim
     return "call", ""
 
 
-def _new_event(kind: str, text: str, item: str, priority: str, now: float, state: str, call_at: float = 0.0) -> dict:
+def _new_event(kind: str, text: str, item: str, priority: str, now: float, state: str, call_at: float = 0.0, extra: dict | None = None) -> dict:
     _S["seq"] += 1
-    return {"id": f"e{int(now * 1000)}-{_S['seq']}", "kind": kind, "text": text, "item": item, "priority": priority,
-            "created": now, "state": state, "call_at": call_at, "expires": now + FRESH_SEC if state == "session" else call_at + FRESH_SEC}
+    ev = {"id": f"e{int(now * 1000)}-{_S['seq']}", "kind": kind, "text": text, "item": item, "priority": priority,
+          "created": now, "state": state, "call_at": call_at, "expires": now + FRESH_SEC if state == "session" else call_at + FRESH_SEC}
+    if extra:
+        ev.update({k: v for k, v in extra.items() if k in ("ask", "sec", "test")})
+    return ev
 
 
-def _item_of(text: str, item: str | None) -> str:
+def _item_of(text: str, item: str | None, kind: str = "") -> str:
     s = re.sub(r"\s+", " ", str(item if item is not None else text or "")).strip().rstrip(".")
-    return s[:200]
+    return s[:ITEM_MAX.get(kind, 200)]
 
 
-async def deliver(kind: str, text: str, item: str | None = None, priority: str = "normal", calls: bool = True) -> str:
-    """Доставить событие хозяину. -> 'called' (запущен звонок, ждём навык) | 'session' (скажем в текущей сессии) | 'tg:<причина>' (ушло в Телеграм/WhatsApp).
-    text -- для Телеграма (как раньше), item -- короткое «что сказать голосом». calls=False: заведомо только Телеграм (например, проспали напоминание)."""
+def _tg_text(kind: str, text: str, why: str) -> str:
+    """Текст для Телеграма: у событий секретаря в конце причина, почему не озвучили (ТЗ-36)."""
+    if kind in REASON_KINDS and why in REASON_TEXT:
+        return f"{text} ({REASON_TEXT[why]})"
+    return text
+
+
+async def _send_tg(kind: str, text: str, why: str = "") -> None:
+    await notify.send_owner(kind, _tg_text(kind, text, why), wa_too=kind not in NO_SELF_KINDS)
+
+
+def find_sec(sec_id: str):
+    """Событие секретаря по его id, если оно ещё ждёт озвучки (звонок идёт или ждёт слова в сессии)."""
     now = _now()
-    mode, why = decide(now, priority) if calls else ("tg", "no_call")
+    for e in _data()["events"]:
+        if e.get("sec") == sec_id and e["state"] in ("calling", "session") and now <= e["expires"]:
+            return e
+    return None
+
+
+def amend_sec(sec_id: str, item: str, ask: str, text: str) -> bool:
+    """Склейка: в уже поставленное в очередь событие секретаря влилось ещё сообщение -- обновляем фразу и текст для Телеграма. False -> событие уже озвучено/ушло."""
+    e = find_sec(sec_id)
+    if e is None:
+        return False
+    e["item"], e["ask"], e["text"] = _item_of(text, item, WA_KIND), ask, text
+    _save()
+    return True
+
+
+async def deliver(kind: str, text: str, item: str | None = None, priority: str = "normal", calls: bool = True,
+                  extra: dict | None = None, tg_reason: str | None = None, force: bool = False) -> str:
+    """Доставить событие хозяину. -> 'called' (запущен звонок, ждём навык) | 'session' (скажем в текущей сессии) | 'tg:<причина>' (ушло в Телеграм/WhatsApp).
+    text -- для Телеграма (как раньше), item -- короткое «что сказать голосом». calls=False: заведомо только Телеграм (например, проспали напоминание).
+    extra (ТЗ-36): ask -- вопрос в конце фразы, sec -- id события секретаря, test -- проверка кнопкой. tg_reason: причина, по которой звонить нельзя уже решил вызывающий.
+    force: «Проверить» секретаря."""
+    now = _now()
+    if tg_reason:
+        mode, why = "tg", tg_reason
+    else:
+        mode, why = decide(now, priority, force) if calls else ("tg", "no_call")
     if mode == "tg":
         print(f"proactive: {kind} -> Телеграм ({why})", flush=True)
-        await notify.send_owner(kind, text)
+        await _send_tg(kind, text, why)
         return "tg:" + why
     d = _data()
-    it = _item_of(text, item)
+    it = _item_of(text, item, kind)
     if mode == "session":
-        ev = _new_event(kind, text, it, priority, now, "session")
+        ev = _new_event(kind, text, it, priority, now, "session", extra=extra)
         d["events"] = (d["events"] + [ev])[-MAX_EVENTS:]
         _save()
         print(f"proactive: {kind} -> скажу в текущей сессии", flush=True)
         return "session"
     if mode == "join":
         base = _inflight(now)
-        ev = _new_event(kind, text, it, priority, now, "calling", float(base["call_at"]))
+        ev = _new_event(kind, text, it, priority, now, "calling", float(base["call_at"]), extra=extra)
         d["events"] = (d["events"] + [ev])[-MAX_EVENTS:]
         _save()
         print(f"proactive: {kind} -> в тот же звонок", flush=True)
         return "called"
-    ev = _new_event(kind, text, it, priority, now, "calling", now)       # call_at ставим ДО запуска: параллельные события присоединятся
+    ev = _new_event(kind, text, it, priority, now, "calling", now, extra=extra)       # call_at ставим ДО запуска: параллельные события присоединятся
     d["events"] = (d["events"] + [ev])[-MAX_EVENTS:]
     _save()
     res = await iot.run_scenario(scenario_id())
     if res["ok"]:
-        d["calls"] = [c for c in d["calls"] if now - c < HOUR_SEC] + [now]
+        if not force:
+            d["calls"] = [c for c in d["calls"] if now - c < HOUR_SEC] + [now]
         d["last"] = {"at": now, "ok": True, "error": ""}
         _save()
         print(f"proactive: {kind} -> звонок (сценарий запущен)", flush=True)
@@ -307,23 +371,41 @@ async def deliver(kind: str, text: str, item: str | None = None, priority: str =
     _save()
     print(f"proactive: звонок не вышел ({res['error']}) -> Телеграм", flush=True)
     for e in failed:
-        await notify.send_owner(e["kind"], e["text"])
+        if e.get("test"):
+            continue
+        await _send_tg(e["kind"], e["text"], "call_failed")
     return "tg:call_failed"
 
 
 # ---------- первая реплика ----------
 def _compose(events: list, mid: bool) -> str:
-    op = "Кстати," if mid else "Слушай,"
-    items = [e["item"] for e in events if e["item"]]
+    items = [e for e in events if e["item"]]
     if not items:
         return ""
     if len(events) == 1:
         e = events[0]
+        if e["kind"] == WA_KIND:                     # ТЗ-36: «<имя> написала: «…». Ответить?» -- без «Слушай»; посреди разговора «Кстати, …»
+            body = f"{e['item']}. {e.get('ask') or 'Ответить?'}"
+            return ("Кстати, " + body) if mid else body
+        op = "Кстати," if mid else "Слушай,"
+        it = e["item"]
         if e["kind"] == "reminder":
-            return f"{op} ты просил напомнить: {items[0]}."
-        return f"{op} {items[0][:1].lower() + items[0][1:]}."
-    parts = [f"{ORD[i] if i < len(ORD) else str(i + 1)}: {it}." for i, it in enumerate(items[:6])]
-    return f"{op} у меня для тебя несколько вещей. " + " ".join(parts)
+            return f"{op} ты просил напомнить: {it}."
+        return f"{op} {it[:1].lower() + it[1:]}."
+    op = "Кстати," if mid else "Слушай,"
+    parts = [f"{ORD[i] if i < len(ORD) else str(i + 1)}: {e['item']}." for i, e in enumerate(items[:6])]
+    tail = " Кому-то ответить?" if any(e["kind"] == WA_KIND for e in items[:6]) else ""
+    return f"{op} у меня для тебя несколько вещей. " + " ".join(parts) + tail
+
+
+_CLAIMED: list = []            # что забрал последний claim(): main.handle отдаёт это секретарю (запомнить, кого озвучили; задать вопрос «Ответить?»)
+
+
+def claimed() -> list:
+    """События, зачитанные последним claim(), и сразу забыть: [{kind, sec, test, ask}]."""
+    out = list(_CLAIMED)
+    _CLAIMED.clear()
+    return out
 
 
 def claim(new_session: bool, now: float | None = None) -> str | None:
@@ -344,9 +426,13 @@ def claim(new_session: bool, now: float | None = None) -> str | None:
     if tests:
         parts.append("Это проверка звонка. Я на связи: раз ты это слышишь, звонок работает.")
         d["test"] = {"status": "answered", "at": now}
+    take.sort(key=lambda e: e["created"])
     text = _compose(take, mid) if take else ""
     if text:
         parts.append(text)
+    if any(e.get("test") for e in take):
+        d["sec_test"] = {"status": "answered", "at": now}
+    _CLAIMED[:] = [{"kind": e["kind"], "sec": e.get("sec", ""), "test": bool(e.get("test")), "ask": e.get("ask", "")} for e in take]
     d["events"] = [e for e in d["events"] if e not in take and e not in tests]
     _save()
     out = " ".join(parts)[:SPOKEN_MAX]
@@ -365,14 +451,16 @@ async def tick(now: float | None = None) -> int:
     for e in late:
         if e["kind"] == "test":
             d["test"] = {"status": "no_answer", "at": now}
+        if e.get("test"):
+            d["sec_test"] = {"status": "no_answer", "at": now}
     _save()
     n = 0
     for e in late:
-        if e["kind"] == "test":
+        if e["kind"] == "test" or e.get("test"):
             continue
         n += 1
         print(f"proactive: {e['kind']}: навык не открылся за 3 минуты -> Телеграм", flush=True)
-        await notify.send_owner(e["kind"], e["text"])
+        await _send_tg(e["kind"], e["text"], "timeout")
     return n
 
 

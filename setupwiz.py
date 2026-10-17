@@ -27,12 +27,14 @@ import memory
 import modules
 import proactive
 import prompts
+import secretary
 import usage
 import wa
 
 router = APIRouter()
 PAGE = Path(__file__).resolve().parent / "setupwiz.html"
 PAGE_MOD = Path(__file__).resolve().parent / "setupmod.html"
+PAGE_SEK = Path(__file__).resolve().parent / "setupsek.html"
 
 SESSION_TTL = 2 * 3600
 MAX_FAILS = 5                  # неверных кодов подряд -> блок на LOCK_SECONDS (общий, не по адресу: адрес подделывается)
@@ -629,6 +631,7 @@ MODULE_INFO = (
     ("macros", "Макросы", "Голосовые сценарии: «запомни: когда я говорю X, сделай то-то»."),
     ("timers", "Напоминания и таймеры", "«Напомни в 18:00 забрать малого», «через 40 минут выключи свет»."),
     ("kids", "Детский режим", "Мягкий тон, сказки и загадки, из умного дома только свет. Выключается кодовой фразой взрослого."),
+    ("secretary", "Чтение WhatsApp вслух", "Сообщения от своих людей Кореш зачитывает голосом на Станции и помогает ответить. Скажи: «читай сообщения от жены»."),
 )
 
 
@@ -743,7 +746,7 @@ def _call_state() -> dict:
 
 def _need_call_module():
     if not proactive.module_on():
-        return _json_err(403, "no_module", "Модуль «Напоминания и таймеры» не подключён: звонить первым нечем.")
+        return _json_err(403, "no_module", "Модуль «Напоминания и таймеры» или «Чтение WhatsApp вслух» не подключён: звонить первым нечем.")
     return None
 
 
@@ -839,6 +842,117 @@ async def call_settings(request: Request):
         proactive.set_enabled(data["enabled"])
     persisted = C.save_values(upd) if upd else True
     return _json_ok(persisted=persisted, **_call_state())
+
+
+# ---------- страница «Чтение WhatsApp вслух» /setup/sekretar (ТЗ-36) ----------
+# Вход тем же кодом, что в /setup/moduli (те же ручки входа и тот же cookie). Страница: переключатели напротив контактов WhatsApp, режим на человека,
+# «Проверить» (имитация входящего: Станция заговорит, в WhatsApp ничего не уходит) и инструкция сценария-звонка (ручки find/select/test из ТЗ-35).
+@router.get("/setup/sekretar", response_class=HTMLResponse)
+@router.get("/setup/sekretar/", response_class=HTMLResponse, include_in_schema=False)
+async def sekretar_page():
+    _need_enabled()
+    headers = {
+        "Cache-Control": "no-store", "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+                                   "connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+    }
+    return HTMLResponse(PAGE_SEK.read_text(encoding="utf-8"), headers=headers)
+
+
+def _need_sek_module():
+    if not secretary.module_on():
+        return _json_err(403, "no_module", "Чтение WhatsApp вслух подключается отдельно.")
+    return None
+
+
+@router.get("/setup/api/sekretar/state")
+async def sek_state(request: Request):
+    _need_mod(request)
+    on = secretary.module_on()
+    st = await wa.status() if (on and wa.enabled()) else {"state": "off", "linked": False}
+    linked = bool(on and wa.enabled() and (wa.linked() or st.get("linked")))
+    contacts = []
+    seen = set()
+    if on and linked:
+        for c in wa.book():
+            p = secretary._person(c["number"])
+            seen.add(secretary.tail10(c["number"]))
+            contacts.append({"number": c["number"], "name": c["name"], "in_list": p is not None, "mode": p["mode"] if p else "text", "as": p["as"] if p else "",
+                             "g": p["g"] if p else "auto", "missing": False})
+        for p in secretary.people():
+            if secretary.tail10(p["number"]) not in seen:          # человек в списке, а в контактах его больше нет (скрыли/удалили): виден, чтобы его можно было убрать
+                contacts.append({"number": p["number"], "name": p["name"], "in_list": True, "mode": p["mode"], "as": p["as"], "g": p["g"], "missing": True})
+    ss = secretary.status()
+    return _json_ok(version=C.VERSION, name=C.assistant_name(), module=on, linked=linked, wa_state=st.get("state"),
+                    sync=wa.sync_status(st) if (on and linked) else "wait", contacts=contacts, count=ss["count"], enabled=ss["enabled"], paused=ss["paused"],
+                    call=_call_state(), test=secretary.test_status())
+
+
+@router.post("/setup/api/sekretar/list")
+async def sek_list(request: Request):
+    """Переключатель напротив контакта: {number, on, mode?, as?, g?}. Номер должен быть среди контактов WhatsApp (или уже в списке)."""
+    _need_mod(request)
+    d = await _body(request)
+    err = _need_sek_module()
+    if err is not None:
+        return err
+    number = re.sub(r"\D", "", str(d.get("number") or ""))
+    if len(number) < 10 or len(number) > 15:
+        return _json_err(400, "bad_number", "Это не похоже на номер из контактов.")
+    mode = d.get("mode")
+    if mode is not None and mode not in secretary.MODES:
+        return _json_err(400, "bad_mode", "Режим: читать текст или только кто написал.")
+    g = d.get("g")
+    if g is not None and g not in ("auto", "m", "f"):
+        return _json_err(400, "bad_g", "Род: автоматически, он или она.")
+    alias = d.get("as")
+    if alias is not None:
+        alias = wa._clean_name(alias, 40)
+    cur = secretary._person(number)
+    if d.get("on") is False:
+        if cur is not None:
+            secretary.remove_person(cur["number"])
+        return _json_ok(count=secretary.status()["count"])
+    contact = next((c for c in wa.book() if secretary.tail10(c["number"]) == secretary.tail10(number)), None)
+    if contact is None and cur is None:
+        return _json_err(404, "not_found", "Такого человека нет среди контактов WhatsApp.")
+    if cur is None:
+        secretary.add_person(contact["number"], contact["name"], mode or "text", alias or "", g or "auto")
+    else:
+        secretary.set_person(cur["number"], mode=mode, alias=alias, g=g)
+    return _json_ok(count=secretary.status()["count"])
+
+
+@router.post("/setup/api/sekretar/settings")
+async def sek_settings(request: Request):
+    """Общий выключатель «читать вслух» (сообщения при выключенном идут в Телеграм)."""
+    _need_mod(request)
+    d = await _body(request)
+    err = _need_sek_module()
+    if err is not None:
+        return err
+    if isinstance(d.get("enabled"), bool):
+        secretary.apply_command("on" if d["enabled"] else "off")
+    return _json_ok(enabled=secretary.status()["enabled"])
+
+
+@router.post("/setup/api/sekretar/test")
+async def sek_test(request: Request):
+    _need_mod(request)
+    err = _need_sek_module()
+    if err is not None:
+        return err
+    res = await secretary.simulate()
+    if not res["ok"]:
+        return _json_err(429 if res["error"] == "too_fast" else 400, res["error"], res["message"])
+    return _json_ok(started=True)
+
+
+@router.get("/setup/api/sekretar/test-status")
+async def sek_test_status(request: Request):
+    _need_mod(request)
+    return _json_ok(**secretary.test_status())
 
 
 @router.get("/setup/api/heard")

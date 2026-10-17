@@ -18,7 +18,9 @@ import config as C
 import wa
 
 MONEY_KINDS = ("balance_low", "balance_zero")
-KINDS = MONEY_KINDS + ("reminder", "timer_done", "module", "settings_link")
+KINDS = MONEY_KINDS + ("reminder", "timer_done", "module", "settings_link", "wa_message", "secretary_new", "secretary_link")
+# Виды образа, которых сервер лицензий может не знать (старая версия): для очереди они едут как «reminder» (просто текст в Телеграм без кнопки).
+SERVER_KIND = {"wa_message": "reminder"}
 OUTBOX = "notify-outbox.json"
 OUTBOX_MAX = 20
 OUTBOX_TTL = 24 * 3600
@@ -70,7 +72,7 @@ def clean_text(kind: str, text: str) -> str:
 
 
 def _body(iid: str, kind: str, text: str) -> dict:
-    b = {"install_id": iid, "kind": kind, "text": text}
+    b = {"install_id": iid, "kind": SERVER_KIND.get(kind, kind), "text": text}
     dom = activation.server_domain()
     if dom:
         b["server_domain"] = dom         # адрес своего сервера: бот по нему даёт ссылку «⚙️ Мой Кореш» и после 7 суток доступа
@@ -118,24 +120,24 @@ SETTINGS_GAP = 60.0
 _LAST_LINK = {"at": 0.0}
 
 
-async def settings_link() -> str:
-    """Голосовое «пришли ссылку на настройки» (ТЗ-34): положить settings_link в очередь, бот пришлёт две кнопки-ссылки в Телеграм.
-    Итог для честного ответа голосом: queued | again (только что слали) | no_tg (сервер лицензий не знает Телеграма клиента) | off (нет активации) | fail.
+async def _link_notify(kind: str, text: str) -> str:
+    """Положить в очередь уведомление-ссылку (бот пришлёт кнопки-ссылки на страницы сервера клиента). queued | again | no_tg | off | fail.
     Локальной очереди на повтор нет: ссылка, которая пришла через час, уже не то, что просили."""
     if not activation.configured() or not activation.auth():
         return "off"
     t = _now()
-    if t - _LAST_LINK["at"] < SETTINGS_GAP:
+    key = "at" if kind == "settings_link" else kind
+    if t - _LAST_LINK.get(key, 0.0) < SETTINGS_GAP:
         return "again"
     iid, rt = activation.auth()
     try:
-        r = await activation._post("/v1/notify", _body(iid, "settings_link", "Ссылки на настройки твоего Кореша."),
+        r = await activation._post("/v1/notify", _body(iid, kind, text),
                                    headers={"Authorization": f"Bearer {rt}"}, timeout=TIMEOUT)
     except Exception as e:  # noqa: BLE001
-        print(f"notify: ссылка на настройки: сеть {type(e).__name__}", flush=True)
+        print(f"notify: ссылка ({kind}): сеть {type(e).__name__}", flush=True)
         return "fail"
     if r.status_code != 200:
-        print(f"notify: ссылка на настройки: сервер ответил {r.status_code}", flush=True)
+        print(f"notify: ссылка ({kind}): сервер ответил {r.status_code}", flush=True)
         return "fail"
     try:
         status = str((r.json() or {}).get("status") or "")
@@ -143,8 +145,19 @@ async def settings_link() -> str:
         status = ""
     if status == "no_tg":
         return "no_tg"
-    _LAST_LINK["at"] = t
+    _LAST_LINK[key] = t
     return "queued"
+
+
+async def settings_link() -> str:
+    """Голосовое «пришли ссылку на настройки» (ТЗ-34): положить settings_link в очередь, бот пришлёт две кнопки-ссылки в Телеграм.
+    Итог для честного ответа голосом: queued | again (только что слали) | no_tg (сервер лицензий не знает Телеграма клиента) | off (нет активации) | fail."""
+    return await _link_notify("settings_link", "Ссылки на настройки твоего Кореша.")
+
+
+async def secretary_link() -> str:
+    """Секретарь (ТЗ-36): сценарий-звонок не настроен -> ссылка на страницу /setup/sekretar с инструкцией в Телеграм. Итог как у settings_link."""
+    return await _link_notify("secretary_link", "Страница чтения WhatsApp вслух: контакты, проверка и инструкция по сценарию-звонку.")
 
 
 async def flush() -> int:

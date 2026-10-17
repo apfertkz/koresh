@@ -147,8 +147,8 @@ check("25d5. неверный код -> 401 bad_code", rb.status_code == 401 and
 rl = tm.post("/setup/api/moduli/login", json={"code": SET25})
 check("25d6. SETUP_CODE пускает, сессия «только модули»; setup_done НЕ сброшен", rl.status_code == 200 and rl.json()["scope"] == "moduli" and C.setup_done() is True, rl.text)
 stm = tm.get("/setup/api/moduli/state").json()
-check("25d7. state: три модуля с признаком on, пояс +5, фраза не задана, баланс есть; секретов нет",
-      [m["id"] for m in stm["modules"]] == ["macros", "timers", "kids"] and [m["on"] for m in stm["modules"]] == [False, True, True]
+check("25d7. state: четыре модуля с признаком on, пояс +5, фраза не задана, баланс есть; секретов нет",
+      [m["id"] for m in stm["modules"]] == ["macros", "timers", "kids", "secretary"] and [m["on"] for m in stm["modules"]] == [False, True, True, False]
       and stm["tz_offset"]["value"] == 5.0 and stm["kids_phrase"]["set"] is False and "budget_usd" in stm["balance"]
       and not any(k in json.dumps(stm) for k in ("brain_key", "webhook", "yandex", "login_code", "iot")), str(stm)[:200])
 rs = tm.post("/setup/api/moduli/settings", json={"tz_offset": "3", "kids_phrase": "синяя ромашка"})
