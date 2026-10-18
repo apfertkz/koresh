@@ -161,7 +161,7 @@ function whoRow(c) {
     if (ok) { c.in_list = want; await reload(); }
   });
   const head = h('div', {class: 'whohead'},
-    h('div', {class: 'nm'}, c.name, h('span', {class: 'num'}, c.missing ? 'нет в контактах WhatsApp' : '')),
+    h('div', {class: 'nm'}, c.name, h('span', {class: 'num'}, [c.phone && c.phone !== c.name ? c.phone : '', c.missing ? 'нет в контактах WhatsApp' : ''].filter(Boolean).join(' · '))),
     h('label', {class: 'sw'}, sw, h('span')));
   row.append(head);
   if (c.in_list) {
@@ -178,20 +178,66 @@ function whoRow(c) {
   return row;
 }
 
+const PHONE_RE = /^\+?[\d\s\-().]+$/;
+function phoneMatch(c, q) {
+  if (!PHONE_RE.test(q)) return false;
+  const qd = q.replace(/\D/g, '');
+  if (qd.length < 3) return false;
+  const alt = qd.startsWith('8') ? '7' + qd.slice(1) : qd;
+  return String(c.number).includes(qd) || String(c.number).includes(alt);
+}
+
+/* «Добавить по номеру»: человека может не быть в контактах WhatsApp */
+function addForm() {
+  const out = h('div');
+  const num = h('input', {type: 'text', inputmode: 'tel', autocomplete: 'off', placeholder: '+7 707 101 99 36', 'aria-label': 'Номер телефона'});
+  const nm = h('input', {type: 'text', maxlength: 40, placeholder: 'Как называть (необязательно)', 'aria-label': 'Как называть'});
+  const mode = h('select', {'aria-label': 'Что делать'},
+    h('option', {value: 'text'}, MODE_LABEL.text), h('option', {value: 'name_only'}, MODE_LABEL.name_only));
+  const doAdd = async (number) => {
+    out.replaceChildren();
+    const r = await api('sekretar/add', {number, name: nm.value.trim(), mode: mode.value});
+    if (!r.ok) { out.replaceChildren(note('bad', r.message || 'Не получилось.')); return false; }
+    await reload((r.existed ? 'Обновил: ' : 'Добавил: ') + (r.name || r.phone) + (r.in_contacts ? '.' : ' (его нет в контактах WhatsApp, читаю по номеру).'));
+    try { const el = document.querySelector('[data-number="' + r.number + '"]'); if (el && el.scrollIntoView) el.scrollIntoView({block: 'center'}); } catch (e) { /* не страшно */ }
+    return true;
+  };
+  num.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); doAdd(num.value); } });
+  const box = h('div', {class: 'who addnum'},
+    h('h3', 0, 'Добавить по номеру'),
+    h('p', {class: 'small'}, 'Если человека нет в списке ниже. Номер с кодом страны: +7 707 101 99 36, 8 707 101 99 36 или 77071019936.'),
+    h('label', 0, 'Номер'), num,
+    h('div', {class: 'more'}, h('div', 0, h('label', 0, 'Как называть'), nm), h('div', 0, h('label', 0, 'Что делать'), mode)),
+    btn('Добавить', () => doAdd(num.value)),
+    out);
+  return {box, doAdd, prefill: v => { num.value = v; }};
+}
+
 function listCard() {
   const box = h('div');
-  const search = h('input', {type: 'text', placeholder: 'Поиск по контактам', 'aria-label': 'Поиск по контактам', autocomplete: 'off'});
+  const form = addForm();
+  const search = h('input', {type: 'text', placeholder: 'Поиск по имени или номеру', 'aria-label': 'Поиск по контактам', autocomplete: 'off'});
   const draw = () => {
-    const q = (search.value || '').trim().toLowerCase();
-    const rows = S.contacts.filter(c => c.in_list || !q || c.name.toLowerCase().includes(q)).map(whoRow);
-    box.replaceChildren(...(rows.length ? rows : [note('info', q ? 'Таких контактов нет.' : 'Контактов WhatsApp пока нет. WhatsApp присылает их один раз при привязке: подожди пару минут и обнови страницу.')]));
+    const raw = (search.value || '').trim();
+    const q = raw.toLowerCase();
+    const hit = c => !q || c.name.toLowerCase().includes(q) || phoneMatch(c, raw);
+    const rows = S.contacts.filter(c => c.in_list || hit(c)).map(whoRow);
+    const items = [];
+    if (q ? !S.contacts.some(hit) : !rows.length) {
+      items.push(note('info', q ? 'Таких контактов нет.' : 'Контактов WhatsApp пока нет. WhatsApp присылает их один раз при привязке: подожди пару минут и обнови страницу.'));
+    }
+    if (PHONE_RE.test(raw) && raw.replace(/\D/g, '').length >= 6 && !S.contacts.some(c => phoneMatch(c, raw))) {
+      items.push(btn('Добавить этот номер', async () => { form.prefill(raw); if (await form.doAdd(raw)) search.value = ''; }, 'alt'));
+    }
+    items.push(...rows);
+    box.replaceChildren(...items);
   };
   search.addEventListener('input', draw);
   draw();
   return h('div', {class: 'card'},
     h('h2', 0, 'Кого читать вслух'),
     h('p', {class: 'small'}, 'Включи переключатель напротив человека, и его сообщения Кореш будет зачитывать на Станции. Группы, рассылки и статусы он не читает никогда. По умолчанию не читается никто.'),
-    search, box);
+    form.box, h('h3', 0, 'Контакты WhatsApp'), search, box);
 }
 
 /* ---------- звонок: сценарий в «Доме с Алисой» ---------- */

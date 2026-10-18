@@ -151,6 +151,46 @@ def add_person(number: str, name: str, mode: str = "text", alias: str = "", g: s
     return dict(cur)
 
 
+PHONE_MSG = "Это не похоже на номер. Нужен номер с кодом страны, например +7 707 101 99 36, или 8 707 101 99 36."
+
+
+def parse_phone(raw) -> str:
+    """Что вписал человек -> цифры с кодом страны (как хранит wa.normalize_number: 8XXXXXXXXXX -> 7XXXXXXXXXX, десять цифр -> 7 + цифры) или ''.
+    Допустимы только цифры, пробелы, скобки, дефисы, точки и ведущий «+»: буквы и мусор -> ''."""
+    s = str(raw or "").strip()
+    if not re.fullmatch(r"\+?[\d\s\-().]{6,30}", s):
+        return ""
+    return wa.normalize_number(s)
+
+
+def fmt_phone(num) -> str:
+    d = re.sub(r"\D", "", str(num or ""))
+    if len(d) == 11 and d.startswith("7"):
+        return f"+7 {d[1:4]} {d[4:7]} {d[7:9]} {d[9:]}"
+    return "+" + d if d else ""
+
+
+def is_phone_label(s) -> bool:
+    return bool(re.fullmatch(r"[+\d\s\-().]+", str(s or "").strip()))
+
+
+def add_by_number(raw, name: str = "", mode: str = "text", g: str = "auto") -> dict:
+    """Добавить человека по номеру (ТЗ-36 п.2: «выбор из контактов ИЛИ ввод номера»). Он может быть и не в контактах WhatsApp.
+    -> {ok, person, in_contacts, existed} | {ok: False, error, message}. Имя: из контактов, иначе вписанное, иначе сам номер."""
+    num = parse_phone(raw)
+    if not num:
+        return {"ok": False, "error": "bad_number", "message": PHONE_MSG}
+    if mode not in MODES:
+        return {"ok": False, "error": "bad_mode", "message": "Режим: читать текст или только кто написал."}
+    nm = re.sub(r"\s+", " ", re.sub(r"[\x00-\x1f\x7f]+", " ", str(name or ""))).strip()[:40]
+    t = tail10(num)
+    contact = next((c for c in wa.book() if tail10(c["number"]) == t), None)
+    full = contact["name"] if contact else (nm or fmt_phone(num))
+    existed = _person(num) is not None
+    person = add_person(contact["number"] if contact else num, full, mode, nm if (nm and nm != full) else "", g)
+    return {"ok": True, "person": person, "in_contacts": contact is not None, "existed": existed}
+
+
 def remove_person(number: str) -> bool:
     d = _data()
     cur = _person(number)
@@ -257,7 +297,8 @@ def _who(number, push="") -> str:
     """Для журнала: имя из списка/контактов (или имя профиля) и последние четыре цифры. Тексты и номера целиком не пишем."""
     p = _person(number)
     if p:
-        return f"{display(p)} {_mask(number)}"
+        nm = display(p)
+        return f"{'номер' if is_phone_label(nm) else nm} {_mask(number)}"
     t = tail10(number)
     for c in wa.book():
         if tail10(c["number"]) == t:
@@ -594,7 +635,7 @@ def command(low: str):
 
 _MSGW = r"(?:(?:все\W+|новые\W+)?(?:сообщения|смс|письма)|" + _WA + r")"
 _WHO = r"(?P<who>\S[^.!?]{0,60}?)"
-ADD_RE = re.compile(_FILL + r"(?:читай|читайте|зачитывай|озвучивай)\W+(?:мне\W+)?" + _MSGW + r"\W+(?:(?:в|из)\W+" + _WA + r"\W+)?(?:от|из)\W+" + _WHO + _TAIL)
+ADD_RE = re.compile(_FILL + r"(?:читай|читайте|зачитывай|озвучивай)\W+(?:мне\W+)?" + _MSGW + r"\W+(?:(?:в|из)\W+" + _WA + r"\W+)?(?:(?:от|из)\W+|с\W+(?=номер))" + _WHO + _TAIL)
 NAME_ONLY_RE = re.compile(_FILL + r"(?:читай|говори|сообщай|озвучивай)\W+(?:мне\W+)?только\W+(?:кто|когда)\W+(?:пишет|написал\w*|писал\w*)\W+(?:(?:мне|в\W+" + _WA + r")\W+)*(?:от\W+)?" + _WHO + _TAIL)
 REMOVE_RE = re.compile(
     _FILL + r"(?:(?:перестань|хватит|прекрати)\W+(?:мне\W+)?(?:читать|зачитывать|озвучивать)\W+(?:мне\W+)?(?:" + _MSGW + r"\W+)*(?:(?:от|из)\W+)?" + _WHO
@@ -618,6 +659,7 @@ SAY = {
     "no_contacts": "Я пока не вижу ни одного контакта WhatsApp. Подожди пару минут после привязки и спроси ещё раз.",
     "none": "Не нашёл такого в контактах WhatsApp. Назови, как человек записан у тебя в телефоне.",
     "number": "Номера голосом я не принимаю. Назови имя из контактов.",
+    "bad_number": "Не расслышал номер. Скажи его целиком с кодом, например «читай сообщения с номера 8 707 101 99 36».",
     "cancel": "Хорошо, ничего не меняю.",
     "no_target": "Мне некому отвечать: за последние полчаса я никого не зачитывал.",
 }
@@ -734,8 +776,12 @@ async def _apply_pending(uid: str, p: dict, phrase: str, s: str, now: float):
             _PENDING.pop(uid, None)
             if kind == "add":
                 person = add_person(p["number"], p["name"], p["mode"])
-                msg = f"Готово, читаю вслух сообщения от {genitive(display(person), gender_of(person) == 'f')}." if p["mode"] == "text" \
-                    else f"Готово, про {genitive(display(person), gender_of(person) == 'f')} буду говорить только, что написал(а), без текста."
+                phone = is_phone_label(display(person))
+                gen = display(person) if phone else genitive(display(person), gender_of(person) == 'f')
+                if p["mode"] == "text":
+                    msg = f"Готово, читаю вслух сообщения {'с номера' if phone else 'от'} {gen}."
+                else:
+                    msg = f"Готово, про {'номер ' if phone else ''}{gen} буду говорить только, что написал(а), без текста."
                 if not proactive.configured():
                     msg += await _link_say()
                 return msg
@@ -811,7 +857,33 @@ def _resolve(who: str) -> tuple:
     return wa.find_contact(who)
 
 
+def _spoken_number(who: str):
+    """None -- в словах хозяина нет номера; '' -- номер есть, но не годится; иначе цифры с кодом страны."""
+    w = re.sub(r"\b(?:номер\w*|телефон\w*)\b", " ", who).strip()
+    if not re.fullmatch(r"[+\d\s\-().]+", w) or not re.search(r"\d", w):
+        return None
+    return parse_phone(w)
+
+
+def _confirm_add_number(uid: str, num: str, mode: str, now: float) -> str:
+    if not wa.enabled() or not wa.linked():
+        return SAY["not_linked"]
+    cur = _person(num)
+    if cur is not None and cur["mode"] == mode:
+        return f"Номер {fmt_phone(num)} у меня уже в списке."
+    contact = next((c for c in wa.book() if tail10(c["number"]) == tail10(num)), None)
+    name = contact["name"] if contact else fmt_phone(num)
+    _PENDING[uid] = {"kind": "add", "number": contact["number"] if contact else num, "name": name, "mode": mode, "at": now, "phone": contact is None}
+    who = f"с номера {fmt_phone(num)}" if contact is None else f"от {genitive(name, _fem_name(name))}"
+    if mode == "name_only":
+        return f"Говорить только, что написал(а) человек {who}, без текста, правильно?" if contact is None else f"Говорить только, что написал(а) {genitive(name, _fem_name(name))}, без текста, правильно?"
+    return f"Читать вслух сообщения {who}, правильно?"
+
+
 def _confirm_add(uid: str, who: str, mode: str, now: float) -> str | None:
+    num = _spoken_number(who)
+    if num is not None:
+        return _confirm_add_number(uid, num, mode, now) if num else SAY["bad_number"]
     found = _resolve(who)
     if found[0] == "err":
         return SAY[found[1]]

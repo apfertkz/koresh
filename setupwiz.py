@@ -879,10 +879,10 @@ async def sek_state(request: Request):
             p = secretary._person(c["number"])
             seen.add(secretary.tail10(c["number"]))
             contacts.append({"number": c["number"], "name": c["name"], "in_list": p is not None, "mode": p["mode"] if p else "text", "as": p["as"] if p else "",
-                             "g": p["g"] if p else "auto", "missing": False})
+                             "g": p["g"] if p else "auto", "missing": False, "phone": secretary.fmt_phone(c["number"])})
         for p in secretary.people():
             if secretary.tail10(p["number"]) not in seen:          # человек в списке, а в контактах его больше нет (скрыли/удалили): виден, чтобы его можно было убрать
-                contacts.append({"number": p["number"], "name": p["name"], "in_list": True, "mode": p["mode"], "as": p["as"], "g": p["g"], "missing": True})
+                contacts.append({"number": p["number"], "name": p["name"], "in_list": True, "mode": p["mode"], "as": p["as"], "g": p["g"], "missing": True, "phone": secretary.fmt_phone(p["number"])})
     ss = secretary.status()
     return _json_ok(version=C.VERSION, name=C.assistant_name(), module=on, linked=linked, wa_state=st.get("state"),
                     sync=wa.sync_status(st) if (on and linked) else "wait", contacts=contacts, count=ss["count"], enabled=ss["enabled"], paused=ss["paused"],
@@ -922,6 +922,22 @@ async def sek_list(request: Request):
     else:
         secretary.set_person(cur["number"], mode=mode, alias=alias, g=g)
     return _json_ok(count=secretary.status()["count"])
+
+
+@router.post("/setup/api/sekretar/add")
+async def sek_add(request: Request):
+    """Добавить человека по номеру (его может не быть в контактах WhatsApp): {number, name?, mode?}. Тот же вход по коду, что у остальных ручек страницы."""
+    _need_mod(request)
+    d = await _body(request)
+    err = _need_sek_module()
+    if err is not None:
+        return err
+    res = secretary.add_by_number(d.get("number"), wa._clean_name(d.get("name"), 40), d.get("mode") or "text")
+    if not res["ok"]:
+        return _json_err(400, res["error"], res["message"])
+    p = res["person"]
+    return _json_ok(number=p["number"], name=p["name"], phone=secretary.fmt_phone(p["number"]), in_contacts=res["in_contacts"], existed=res["existed"],
+                    count=secretary.status()["count"])
 
 
 @router.post("/setup/api/sekretar/settings")

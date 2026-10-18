@@ -1919,6 +1919,8 @@ function walk(n, f) { f(n); if (n.nodeType === 1) n.children.forEach(c => walk(c
         walk(st.root === 'app' ? reg['app'] : tree, n => { if (n.nodeType === 1 && n.tag === 'button' && textOf(n) === st.click) found.push(n); });
         for (const b of found) for (const fn of (b.handlers.click || [])) await fn();
       }
+      if (st.input) { const f = []; walk(tree, n => { if (n.nodeType === 1 && n.tag === 'input' && n.attrs['aria-label'] === st.input) f.push(n); });
+        for (const n of f) { n.value = st.value; for (const fn of (n.handlers.input || [])) await fn(); } }
       if (st.checkAll) walk(tree, n => { if (n.nodeType === 1 && n.tag === 'input' && n.attrs.type === 'checkbox') n.checked = true; });
       if (st.fire) for (let i = 0; i < st.fire; i++) { for (const t of TIMERS.slice()) if (t) await t(); await tick0(); }
       await tick0();

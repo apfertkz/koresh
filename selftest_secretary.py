@@ -9,6 +9,7 @@ MARG = "Марга" + "ри" + "та"
 MARG_GEN = "Марга" + "риты"
 NUM_W, NUM_S, NUM_M, NUM_O1, NUM_O2, NUM_R = "77015551111", "77025552222", "77035553333", "77031112233", "77034445566", "77016667777"
 NUM_X = "77099998888"                                      # не из списка
+NUM_N = "77071019936"                                      # живой баг 17.10: учредитель вбил +77071019936 в поиск и получил «Таких контактов нет»; в контактах WhatsApp его нет
 UID28 = UID26
 SENT28 = []                                                 # сообщения контактам (не «себе»), дошедшие до фейкового демона
 INBOX28 = []                                                # то, что фейковый демон отдаёт на GET /inbox
@@ -334,7 +335,9 @@ check("28f6. две «Оли» -> переспрос с полными имен�
 q7 = v28("читай сообщения от Васи")
 check("28f7. такого контакта нет -> честно «не нашёл в контактах WhatsApp», никого не добавили", "не нашёл" in q7.lower() and len(secretary.people()) == 2, q7)
 q8 = v28("читай сообщения от 8 701 555 12 34")
-check("28f8. голый номер голосом не принимаем", "номер" in q8.lower() and len(secretary.people()) == 2, q8)
+check("28f8. номер голосом: переспрос с нормализованным номером «с номера +7 701 555 12 34», пока никого не добавили", q8 == "Читать вслух сообщения с номера +7 701 555 12 34, правильно?" and len(secretary.people()) == 2, q8)
+q8b = v28("нет")
+check("28f8b. «нет» после переспроса по номеру -> не добавлен, переспрос снят", len(secretary.people()) == 2 and not secretary._PENDING, q8b)
 q9 = v28("перестань читать маму")
 check("28f9. «перестань читать маму», а мамы в списке нет -> «и так не читаю», список цел", "не в списке" in q9 or "и так" in q9, q9)
 v28("читай сообщения от мамы")
@@ -370,6 +373,34 @@ v28("читай сообщения от жены")
 q17 = v28("да")
 check("28f19. сценарий-звонок не настроен: Кореш добавил, но честно говорит об этом и шлёт ссылку на инструкцию в Телеграм (secretary_link)",
       "сценарий" in q17 and "Телеграм" in q17 and any(n.get("kind") == "secretary_link" for n in LIC24.notes) and len(secretary.people()) == 1, str((q17, LIC24.notes)))
+
+# ================= 28f+. голосом по номеру: «читай сообщения с номера 8 707 101 99 36» =================
+_r28()
+brain._create = Script24()
+n1 = v28("читай сообщения с номера 8 707 101 99 36")
+check("28f20. «читай сообщения с номера 8 707 101 99 36» -> переспрос «Читать вслух сообщения с номера +7 707 101 99 36, правильно?», в списке пока никого",
+      n1 == "Читать вслух сообщения с номера +7 707 101 99 36, правильно?" and secretary.people() == [] and noml(), n1)
+n2 = v28("да")
+pp = secretary.people()
+check("28f21. после «да» номер в списке в едином формате (77071019936), режим «читать текст», хотя его нет в контактах; ответ честный, модель не звали",
+      [(x["number"], x["mode"]) for x in pp] == [(NUM_N, "text")] and "с номера +7 707 101 99 36" in n2 and noml(), n2)
+n3 = v28("читай сообщения от номера +7 (707) 101-99-36")
+check("28f22. тот же номер другой записью -> «уже в списке», дубля нет", "уже в списке" in n3 and len(secretary.people()) == 1, n3)
+n4 = v28("читай только кто пишет от номера 87071019936")
+n4b = v28("да")
+check("28f23. «читай только кто пишет от номера 87071019936» -> режим меняется на name_only, запись всё та же", [(x["number"], x["mode"]) for x in secretary.people()] == [(NUM_N, "name_only")] and "номера" in n4, f"{n4} | {n4b}")
+n5 = v28("читай сообщения с номера 12 34")
+check("28f24. обрывок номера -> «не расслышал номер», ничего не добавлено", "не расслышал" in n5.lower() and len(secretary.people()) == 1 and not secretary._PENDING, n5)
+_r28(linked=False)
+n6 = v28("читай сообщения с номера 8 707 101 99 36")
+check("28f25. WhatsApp не привязан -> честно «не привязан», переспроса нет", "не привязан" in n6 and not secretary._PENDING and secretary.people() == [], n6)
+_r28()
+brain._create = Script24()
+v28("читай сообщения с номера 8 707 101 99 36")
+v28("да")
+lg_n = logs28(lambda: feed28(ev28(NUM_N, "СЕКРЕТ-НОМЕР")))[1]
+check("28f26. в журнале добавленный по номеру человек без имени подписан «номер ••9936»: ни номера целиком, ни текста",
+      "7071019936" not in lg_n and "707 101" not in lg_n and "СЕКРЕТ-НОМЕР" not in lg_n, lg_n)
 
 # ================= 28g. ответ: только автору последнего озвученного, только после «да» (приёмка 5) =================
 _r28()
@@ -563,7 +594,7 @@ os.environ["SETUP_CODE"] = SET28
 setupwiz.reset_for_tests()
 C.set_setup_done(True)
 tcs = TestClient(main.app)
-EP28 = [("get", "state"), ("post", "list"), ("post", "settings"), ("post", "test"), ("get", "test-status")]
+EP28 = [("get", "state"), ("post", "list"), ("post", "add"), ("post", "settings"), ("post", "test"), ("get", "test-status")]
 anon28 = {f"{m} {p}": getattr(tcs, m)(f"/setup/api/sekretar/{p}", **({"json": {}} if m == "post" else {})).status_code for m, p in EP28}
 check("28l1. без входа все ручки страницы отвечают 401", set(anon28.values()) == {401}, str(anon28))
 pg = tcs.get("/setup/sekretar")
@@ -585,6 +616,47 @@ a_bad = {k: tcs.post("/setup/api/sekretar/list", json=v).status_code for k, v in
 check("28l7. номера нет в контактах -> 404, мусорный номер -> 400, чужой режим -> 400; список не испорчен", a_bad == {"чужой номер": 404, "мусор": 400, "режим": 400} and len(secretary.people()) == 1, str(a_bad))
 a_off = tcs.post("/setup/api/sekretar/list", json={"number": NUM_R, "on": False})
 check("28l8. выключить переключатель -> человек убран из списка", a_off.status_code == 200 and secretary.people() == [])
+# --- добавление по номеру (ТЗ-36 п.2: «выбор из контактов ИЛИ ввод номера»)
+ADD_URL = "/setup/api/sekretar/add"
+ad = [tcs.post(ADD_URL, json={"number": x}) for x in ("+7 707 101 99 36", "87071019936", "77071019936", "+77071019936", "707 101 99 36", "8 (707) 101-99-36")]
+check("28l16. номер в шести записях (+7 707 101 99 36, 87071019936, 77071019936, +77071019936, 10 цифр, со скобками) -> один и тот же 77071019936: один человек в списке, без дублей",
+      all(r.status_code == 200 for r in ad) and [x["number"] for x in secretary.people()] == [NUM_N] and ad[0].json()["existed"] is False and all(r.json()["existed"] for r in ad[1:])
+      and ad[0].json()["number"] == NUM_N and ad[0].json()["phone"] == "+7 707 101 99 36" and ad[0].json()["in_contacts"] is False, ad[0].text)
+st_n = tcs.get("/setup/api/sekretar/state").json()
+row_n = next((c for c in st_n["contacts"] if c["number"] == NUM_N), None)
+check("28l17. добавленного по номеру сразу видно в state: в списке, нет в контактах WhatsApp (missing), имя = красивый номер, режим «читать текст»",
+      row_n and row_n["in_list"] and row_n["missing"] and row_n["name"] == "+7 707 101 99 36" and row_n["mode"] == "text" and row_n["phone"] == "+7 707 101 99 36", str(row_n))
+check("28l18. файл-флаг для демона получил его 10 цифр (демон начнёт копить его входящие)", json.loads((WAD24 / "inbox.json").read_text(encoding="utf-8"))["numbers"] == ["7071019936"])
+bad_n = {k: tcs.post(ADD_URL, json=v) for k, v in {"буквы": {"number": "abc"}, "короткий": {"number": "12345"}, "смесь": {"number": "+7 707 abc 99 36"}, "пустой": {"number": ""},
+                                                  "нет поля": {}, "длинный": {"number": "1" * 20}, "режим": {"number": NUM_X, "mode": "хакер"}}.items()}
+check("28l19. невалидный номер (буквы, короткий, смесь, пусто, без поля, слишком длинный) и чужой режим -> 400 с понятным сообщением; список не испорчен",
+      all(r.status_code == 400 for r in bad_n.values()) and all("номер" in bad_n[k].json()["message"] for k in ("буквы", "короткий", "смесь", "пустой", "нет поля", "длинный"))
+      and bad_n["режим"].json()["error"] == "bad_mode" and [x["number"] for x in secretary.people()] == [NUM_N], str({k: r.text for k, r in bad_n.items()}))
+ad_c = tcs.post(ADD_URL, json={"number": "8 702 555 22 22", "name": "Братишка", "mode": "name_only"})
+pc = next((x for x in secretary.people() if x["number"] == NUM_S), None)
+check("28l20. номер из контактов WhatsApp + «как называть» + режим: имя из контактов, «как называть» отдельно, in_contacts=true, режим name_only",
+      ad_c.status_code == 200 and ad_c.json()["in_contacts"] is True and pc and pc["name"] == "Сергей Карпов" and pc["as"] == "Братишка" and pc["mode"] == "name_only", ad_c.text)
+ad_n = tcs.post(ADD_URL, json={"number": "+7 701 000 11 22", "name": "Сантехник Игорь", "mode": "text"})
+pn = next((x for x in secretary.people() if x["number"] == "77010001122"), None)
+check("28l21. вне контактов, но с именем: имя = вписанное, display = «Сантехник Игорь»", ad_n.status_code == 200 and pn and pn["name"] == "Сантехник Игорь" and secretary.display(pn) == "Сантехник Игорь", ad_n.text)
+# входящее от добавленного вручную номера даёт звонок
+RUNS35.clear()
+feed28(ev28(NUM_N, "ты дома?"))
+pe_n = proactive._data()["events"]
+check("28l22. входящее от номера, добавленного вручную (его нет в контактах), запускает сценарий-звонок и создаёт событие wa_message",
+      RUNS35 == [("sc-call", True, True)] and len(pe_n) == 1 and pe_n[0]["kind"] == "wa_message", str((RUNS35, pe_n)))
+tn_n = sess35("", True)["text"]
+check("28l23. Станция говорит первой: «+7 707 101 99 36 написал: «ты дома?». Ответить?»", tn_n == "+7 707 101 99 36 написал: «ты дома?». Ответить?", tn_n)
+CLK24["t"] += 700
+RUNS35.clear()
+feed28(ev28("87071019936", "а в другой записи?"))
+tn_2 = sess35("", True)["text"]
+check("28l24. номер, пришедший от демона в другой записи (с кодом 8), тоже узнаётся (сверка по 10 последним цифрам): снова звонок и та же подпись",
+      len(RUNS35) == 1 and tn_2 == "+7 707 101 99 36 написал: «а в другой записи?». Ответить?", str((RUNS35, tn_2)))
+CLK24["t"] += 700
+for n_ in (NUM_N, NUM_S, "77010001122"):
+    tcs.post("/setup/api/sekretar/list", json={"number": n_, "on": False})
+check("28l25. выключатель убирает и добавленного по номеру (его нет в контактах, но он в списке)", secretary.people() == [])
 tcs.post("/setup/api/sekretar/list", json={"number": NUM_W, "on": True})
 set1 = tcs.post("/setup/api/sekretar/settings", json={"enabled": False})
 check("28l9. общий выключатель «читать вслух» на странице: выключен -> state это показывает и сообщения уходят в Телеграм", set1.status_code == 200 and tcs.get("/setup/api/sekretar/state").json()["enabled"] is False)
@@ -646,12 +718,24 @@ else:
          "seq": [{"click": "Проверить"}]},                                                                                                                   # 5
         {"fn": "renderMain", "S": dict(SS, call=CALL_NO), "fetch": {}, "seq": [{"click": "Скопировать команду"}]},                                           # 6
         {"fn": "renderMain", "S": dict(SS, contacts=[]), "fetch": {}},                                                                                       # 7
+        {"fn": "renderMain", "S": dict(SS), "fetch": {}, "seq": [{"input": "Поиск по контактам", "value": "+77071019936"}]},                                  # 8: номера нет среди контактов
+        {"fn": "renderMain", "S": dict(SS), "fetch": {"sekretar/add": {"ok": True, "number": NUM_N, "name": "+7 707 101 99 36", "phone": "+7 707 101 99 36", "in_contacts": False, "existed": False, "count": 3},
+                                                      "sekretar/state": dict(SS, contacts=CT + [{"number": NUM_N, "name": "+7 707 101 99 36", "phone": "+7 707 101 99 36", "in_list": True, "mode": "text", "as": "", "g": "auto", "missing": True}], count=3)},
+         "seq": [{"input": "Поиск по контактам", "value": "+77071019936"}, {"click": "Добавить этот номер"}]},                                                  # 9: кнопка под «Таких контактов нет»
+        {"fn": "renderMain", "S": dict(SS), "fetch": {"sekretar/add": {"ok": True, "number": NUM_N, "name": "Сантехник", "phone": "+7 707 101 99 36", "in_contacts": False, "existed": False, "count": 3},
+                                                      "sekretar/state": dict(SS, contacts=CT + [{"number": NUM_N, "name": "Сантехник", "phone": "+7 707 101 99 36", "in_list": True, "mode": "text", "as": "Сантехник", "g": "auto", "missing": True}], count=3)},
+         "seq": [{"input": "Номер телефона", "value": "8 707 101 99 36"}, {"input": "Как называть", "value": "Сантехник"}, {"click": "Добавить"}]},               # 10: форма
+        {"fn": "renderMain", "S": dict(SS), "fetch": {"sekretar/add": {"__status": 400, "ok": False, "error": "bad_number", "message": "Это не похоже на номер. Нужен номер с кодом страны, например +7 707 101 99 36."}},
+         "seq": [{"input": "Номер телефона", "value": "abc"}, {"click": "Добавить"}]},                                                                            # 11: ошибка сервера видна
+        {"fn": "renderMain", "S": dict(SS), "fetch": {}, "seq": [{"input": "Поиск по контактам", "value": "701 555 11 11"}]},                                # 12: поиск по цифрам находит контакт
+        {"fn": "renderMain", "S": dict(SS, contacts=CT + [{"number": NUM_N, "name": "+7 707 101 99 36", "phone": "+7 707 101 99 36", "in_list": True, "mode": "text", "as": "", "g": "auto", "missing": True}]),
+         "fetch": {}},                                                                                                                                        # 13: добавленный вручную виден с пометкой
     ]
     _j28 = Path(tempfile.mkdtemp()) / "dom.js"
     _j28.write_text(DOM36, encoding="utf-8")
     p28 = subprocess.run(["node", str(_j28), str(HERE / "setupsek.html"), json.dumps(scen28, ensure_ascii=False)], capture_output=True, text=True, timeout=90)
     ok28 = p28.returncode == 0 and p28.stdout.strip().startswith("[")
-    check("28m5. страница отрисовывается настоящим JS (8 сценариев)", ok28, (p28.stderr or p28.stdout)[:500])
+    check("28m5. страница отрисовывается настоящим JS (14 сценариев)", ok28, (p28.stderr or p28.stdout)[:500])
     if ok28:
         R28 = json.loads(p28.stdout.strip().splitlines()[-1])[1:]
         T28 = [_text(x["app"]) for x in R28]
@@ -665,6 +749,15 @@ else:
         check("28m11. «Проверить» шлёт sekretar/test, опрашивает статус, при успехе «Дозвонился»", ("sekretar/test", {}) in fl28(4) and "Дозвонился" in T28[4], T28[4][-300:])
         check("28m12. «Проверить» без сценария -> честная причина с экрана сервера, а не молчание", "Сначала настрой сценарий-звонок" in T28[5], T28[5][-300:])
         check("28m13. «Скопировать команду» кладёт в буфер точную фразу", R28[6]["copied"] == ["спроси у кореш дома что нового"], str(R28[6]["copied"]))
+        check("28m15. поиск по номеру: в контактах такого нет -> «Таких контактов нет.» и кнопка «Добавить этот номер»; форма «Добавить по номеру» (номер, как называть, режим, кнопка «Добавить») на месте",
+              "Таких контактов нет." in T28[8] and "Добавить этот номер" in T28[8] and all(x in T28[0] for x in ("Добавить по номеру", "Номер", "Как называть", "читать текст", "только кто написал", "Добавить")), T28[8][:400])
+        check("28m16. «Добавить этот номер» шлёт sekretar/add с введённым номером и после ответа сервера список перерисован (новая строка, «нет в контактах WhatsApp»)",
+              any(k == "sekretar/add" and b and b["number"] == "+77071019936" for k, b in fl28(9)) and any(k == "sekretar/state" for k, b in fl28(9)) and "Добавил" in T28[9] and "нет в контактах WhatsApp" in T28[9], T28[9][:500])
+        check("28m17. форма: «Добавить» шлёт номер ровно как набран («8 707 101 99 36»; нормализует сервер) и «Как называть»; новая строка видна",
+              any(k == "sekretar/add" and b and b["number"] == "8 707 101 99 36" and b["name"] == "Сантехник" for k, b in fl28(10)) and "Сантехник" in T28[10], str(fl28(10)))
+        check("28m18. невалидный номер -> понятная ошибка сервера прямо под формой, а не молчание", "Это не похоже на номер" in T28[11], T28[11][:400])
+        check("28m19. поиск по цифрам: «701 555 11 11» находит контакт " + MARG + " по номеру, «Таких контактов нет» нет", MARG in T28[12] and "Таких контактов нет" not in T28[12], T28[12][:400])
+        check("28m20. добавленный по номеру без имени: строка с номером и пометкой «нет в контактах WhatsApp», переключатель включён", "+7 707 101 99 36" in T28[13] and "нет в контактах WhatsApp" in T28[13], T28[13][:500])
         check("28m14. список пуст -> объяснение, как добавить голосом («читай сообщения от жены»)", "читай сообщения от жены" in T28[7], T28[7][:300])
 
 # ================= 28n. настоящий wa-daemon.js на фейковом Baileys: очередь входящих =================
